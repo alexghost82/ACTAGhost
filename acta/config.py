@@ -75,6 +75,23 @@ class Settings(BaseSettings):
     ollama_host: str = "http://localhost:11434"
     ollama_model: str = "llama3.1"
 
+    # --- Multimodal backends (optional, offline-first) ---
+    multimodal_stt_enabled: bool = Field(default=False)
+    multimodal_stt_backend: str | None = Field(default=None)
+    multimodal_whisper_model: str = Field(default="base")
+    multimodal_openai_stt_model: str = Field(default="gpt-4o-mini-transcribe")
+
+    multimodal_tts_enabled: bool = Field(default=False)
+    multimodal_tts_backend: str | None = Field(default=None)
+    multimodal_piper_binary: str = Field(default="piper")
+    multimodal_piper_voice: str | None = Field(default=None)
+
+    multimodal_vision_enabled: bool = Field(default=False)
+    multimodal_vision_backend: str | None = Field(default=None)
+    multimodal_vision_prompt: str = Field(
+        default="Describe this image succinctly and factually for downstream reasoning."
+    )
+
     # --- Localization ---
     # Default UI/answer language when detection is inconclusive. One of: ru, he, en.
     default_language: str = Field(default="ru")

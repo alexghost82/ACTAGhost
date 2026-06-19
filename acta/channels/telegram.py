@@ -15,6 +15,7 @@ import httpx
 from acta.channels.base import ChannelHub, IncomingMessage, RecentEventDeduper
 from acta.config import Settings, get_settings
 from acta.logging_config import get_logger
+from acta.schemas import Modality
 
 log = get_logger("channels.telegram")
 
@@ -52,15 +53,62 @@ class TelegramChannel:
         message = update.get("message") or update.get("edited_message")
         if not message:
             return None
-        text = message.get("text")
+        text = message.get("text") or message.get("caption") or ""
         chat = message.get("chat", {})
-        if not text or "id" not in chat:
+        attachments: list[dict[str, Any]] = []
+        modality = Modality.TEXT
+
+        if message.get("voice"):
+            voice = message["voice"]
+            attachments.append(
+                {
+                    "type": "voice",
+                    "platform": "telegram",
+                    "file_id": voice.get("file_id"),
+                    "mime_type": voice.get("mime_type"),
+                    "duration": voice.get("duration"),
+                }
+            )
+            modality = Modality.VOICE
+
+        if message.get("audio"):
+            audio = message["audio"]
+            attachments.append(
+                {
+                    "type": "audio",
+                    "platform": "telegram",
+                    "file_id": audio.get("file_id"),
+                    "mime_type": audio.get("mime_type"),
+                    "duration": audio.get("duration"),
+                }
+            )
+            modality = Modality.VOICE
+
+        if message.get("photo"):
+            photo = message["photo"][-1]
+            attachments.append(
+                {
+                    "type": "image",
+                    "platform": "telegram",
+                    "file_id": photo.get("file_id"),
+                    "width": photo.get("width"),
+                    "height": photo.get("height"),
+                    "caption": message.get("caption"),
+                    "alt": message.get("caption"),
+                }
+            )
+            if modality != Modality.VOICE:
+                modality = Modality.IMAGE
+
+        if ("id" not in chat) or (not text and not attachments):
             return None
         frm = message.get("from", {})
         return IncomingMessage(
             channel="telegram",
             sender_id=str(chat["id"]),
             text=text,
+            modality=modality,
+            attachments=attachments,
             metadata={"username": frm.get("username"), "first_name": frm.get("first_name")},
         )
 

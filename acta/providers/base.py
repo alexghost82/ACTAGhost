@@ -5,6 +5,7 @@ from __future__ import annotations
 import abc
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 
@@ -73,6 +74,17 @@ class LLMProvider(abc.ABC):
 
     def is_available(self) -> bool:
         return True
+
+    def describe_image(
+        self,
+        image_source: str | Path,
+        *,
+        mime_type: str | None = None,
+        prompt: str = "",
+        max_tokens: int = 256,
+    ) -> str | None:
+        """Optional vision hook; return ``None`` when unsupported/unavailable."""
+        return None
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<{type(self).__name__} model={self.model!r}>"

@@ -9,6 +9,7 @@ system never breaks.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import time
 
 from acta.config import Settings, get_settings
@@ -40,6 +41,7 @@ DEFAULT_RULES: list[RoutingRule] = [
     RoutingRule(profile="planning", provider="anthropic"),
     RoutingRule(profile="coding", provider="openai"),
     RoutingRule(profile="fast", provider="gemini"),
+    RoutingRule(profile="multimodal", provider="openai"),
     RoutingRule(profile="local", provider="ollama"),
     RoutingRule(profile="default", provider="openai"),
 ]
@@ -182,3 +184,31 @@ class AIRouter:
                 )
         log.warning("Provider %s failed after retries; falling back to mock", provider_name)
         return self._mock.complete(messages, temperature=temperature, max_tokens=max_tokens)
+
+    def describe_image(
+        self,
+        image_source: str | Path,
+        *,
+        mime_type: str | None = None,
+        prompt: str = "",
+        profile: str = "multimodal",
+        max_tokens: int = 256,
+    ) -> str | None:
+        provider_name, provider = self._select_provider_entry(profile)
+        if provider_name == "mock":
+            return None
+        try:
+            result = provider.describe_image(
+                image_source,
+                mime_type=mime_type,
+                prompt=prompt,
+                max_tokens=max_tokens,
+            )
+            if result:
+                self._record_success(provider_name)
+                return result
+            self._record_failure(provider_name)
+            return None
+        except Exception:  # pragma: no cover - network/runtime safety net
+            self._record_failure(provider_name)
+            return None

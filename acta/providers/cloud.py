@@ -6,6 +6,9 @@ no optional dependencies. Install extras as needed, e.g. ``pip install acta[open
 
 from __future__ import annotations
 
+import base64
+from pathlib import Path
+
 from acta.providers.base import LLMProvider, LLMResponse
 
 
@@ -40,6 +43,44 @@ class OpenAIProvider(LLMProvider):
             provider=self.name,
             model=self.model,
         )
+
+    def describe_image(
+        self,
+        image_source: str | Path,
+        *,
+        mime_type: str | None = None,
+        prompt: str = "",
+        max_tokens: int = 256,
+    ) -> str | None:
+        if not self.is_available():
+            return None
+        source = str(image_source)
+        if source.startswith("http://") or source.startswith("https://"):
+            image_url = source
+        else:
+            path = Path(source)
+            if not path.exists():
+                return None
+            image_bytes = path.read_bytes()
+            guessed = mime_type or "image/jpeg"
+            encoded = base64.b64encode(image_bytes).decode("ascii")
+            image_url = f"data:{guessed};base64,{encoded}"
+        client = self._ensure_client()
+        message_text = prompt or "Describe this image."
+        resp = client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": message_text},
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                    ],
+                }
+            ],
+            max_tokens=max_tokens,
+        )
+        return (resp.choices[0].message.content or "").strip() or None
 
 
 class AnthropicProvider(LLMProvider):
@@ -109,6 +150,34 @@ class GeminiProvider(LLMProvider):
             generation_config={"temperature": temperature, "max_output_tokens": max_tokens},
         )
         return LLMResponse(text=resp.text or "", provider=self.name, model=self.model)
+
+    def describe_image(
+        self,
+        image_source: str | Path,
+        *,
+        mime_type: str | None = None,
+        prompt: str = "",
+        max_tokens: int = 256,
+    ) -> str | None:
+        if not self.is_available():
+            return None
+        source = str(image_source)
+        parts: list[object] = [prompt or "Describe this image."]
+        if source.startswith("http://") or source.startswith("https://"):
+            parts.append({"file_data": {"file_uri": source}})
+        else:
+            path = Path(source)
+            if not path.exists():
+                return None
+            image_bytes = path.read_bytes()
+            parts.append({"mime_type": mime_type or "image/jpeg", "data": image_bytes})
+        genai = self._ensure()
+        model = genai.GenerativeModel(self.model)
+        resp = model.generate_content(
+            parts,
+            generation_config={"temperature": 0.2, "max_output_tokens": max_tokens},
+        )
+        return (resp.text or "").strip() or None
 
 
 class OllamaProvider(LLMProvider):
