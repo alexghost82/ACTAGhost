@@ -48,6 +48,10 @@ class Settings(BaseSettings):
 
     # --- AI Router / Providers ---
     default_provider: str = Field(default="mock")
+    provider_max_retries: int = Field(default=2)
+    provider_retry_backoff_base: float = Field(default=0.2)
+    provider_breaker_threshold: int = Field(default=3)
+    provider_breaker_cooldown: float = Field(default=30.0)
 
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o-mini"
@@ -85,6 +89,7 @@ class Settings(BaseSettings):
     whatsapp_verify_token: str = Field(default="acta-verify")
     whatsapp_app_secret: str | None = Field(default=None)
     whatsapp_allowed_numbers: list[str] = Field(default_factory=list)
+    inbound_dedupe_window_size: int = Field(default=1024)
 
     # --- Optional backing stores ---
     postgres_dsn: str | None = None

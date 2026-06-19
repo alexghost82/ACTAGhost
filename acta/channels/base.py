@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -10,6 +11,26 @@ from acta.orchestrator import Orchestrator
 from acta.schemas import UserRequest
 
 log = get_logger("channels")
+
+
+class RecentEventDeduper:
+    """Keep a bounded set of recent inbound IDs for webhook idempotency."""
+
+    def __init__(self, max_size: int) -> None:
+        self.max_size = max(1, max_size)
+        self._queue: deque[str] = deque()
+        self._seen: set[str] = set()
+
+    def remember(self, event_id: str) -> bool:
+        """Return True only when this event ID is seen for the first time."""
+        if event_id in self._seen:
+            return False
+        self._queue.append(event_id)
+        self._seen.add(event_id)
+        while len(self._queue) > self.max_size:
+            expired = self._queue.popleft()
+            self._seen.discard(expired)
+        return True
 
 
 @dataclass

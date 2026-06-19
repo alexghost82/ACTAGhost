@@ -9,6 +9,7 @@ system never breaks.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 
 from acta.config import Settings, get_settings
 from acta.logging_config import get_logger
@@ -24,6 +25,12 @@ class RoutingRule:
 
     profile: str
     provider: str
+
+
+@dataclass
+class CircuitState:
+    failures: int = 0
+    opened_until: float = 0.0
 
 
 # Sensible default policy: prefer capable models for reasoning, fast models for
@@ -43,6 +50,7 @@ class AIRouter:
         self.settings = settings or get_settings()
         self._providers: dict[str, LLMProvider] = {}
         self._mock = MockProvider()
+        self._circuits: dict[str, CircuitState] = {}
         self.rules: list[RoutingRule] = list(DEFAULT_RULES)
         self._build_providers()
 
@@ -66,6 +74,54 @@ class AIRouter:
         from acta.providers.cloud import OllamaProvider
 
         self._providers["ollama"] = OllamaProvider(s.ollama_host, s.ollama_model)
+        for name in self._providers:
+            self._circuits.setdefault(name, CircuitState())
+
+    def _is_circuit_open(self, provider_name: str) -> bool:
+        if provider_name == "mock":
+            return False
+        state = self._circuits.setdefault(provider_name, CircuitState())
+        return state.opened_until > time.monotonic()
+
+    def _record_success(self, provider_name: str) -> None:
+        state = self._circuits.setdefault(provider_name, CircuitState())
+        state.failures = 0
+        state.opened_until = 0.0
+
+    def _record_failure(self, provider_name: str) -> None:
+        if provider_name == "mock":
+            return
+        state = self._circuits.setdefault(provider_name, CircuitState())
+        threshold = max(1, self.settings.provider_breaker_threshold)
+        cooldown = max(0.0, self.settings.provider_breaker_cooldown)
+        state.failures += 1
+        if state.failures >= threshold:
+            state.opened_until = time.monotonic() + cooldown
+            log.warning(
+                "Circuit opened for provider=%s failures=%d cooldown=%.1fs",
+                provider_name,
+                state.failures,
+                cooldown,
+            )
+
+    def _select_provider_entry(self, profile: str = "default") -> tuple[str, LLMProvider]:
+        """Return a candidate provider key + instance for this profile."""
+        candidates = [r.provider for r in self.rules if r.profile == profile]
+        candidates.append(self.settings.default_provider)
+        candidates.extend(r.provider for r in self.rules if r.profile == "default")
+        for name in candidates:
+            prov = self._providers.get(name)
+            if prov is None:
+                continue
+            if self._is_circuit_open(name):
+                continue
+            try:
+                if prov.is_available():
+                    return name, prov
+            except Exception:
+                continue
+        log.debug("Routing profile=%s fell back to mock provider", profile)
+        return "mock", self._mock
 
     # -- routing ----------------------------------------------------------- #
     def available_providers(self) -> list[str]:
@@ -84,23 +140,7 @@ class AIRouter:
 
     def select(self, profile: str = "default") -> LLMProvider:
         """Return the best available provider for the given task profile."""
-        # 1) explicit rule for the profile
-        candidates = [r.provider for r in self.rules if r.profile == profile]
-        # 2) configured global default
-        candidates.append(self.settings.default_provider)
-        # 3) the generic default rule
-        candidates.extend(r.provider for r in self.rules if r.profile == "default")
-        for name in candidates:
-            prov = self._providers.get(name)
-            if prov is None:
-                continue
-            try:
-                if prov.is_available():
-                    return prov
-            except Exception:
-                continue
-        log.debug("Routing profile=%s fell back to mock provider", profile)
-        return self._mock
+        return self._select_provider_entry(profile)[1]
 
     def complete(
         self,
@@ -110,11 +150,35 @@ class AIRouter:
         temperature: float = 0.2,
         max_tokens: int = 1024,
     ) -> LLMResponse:
-        provider = self.select(profile)
-        try:
-            return provider.complete(
-                messages, temperature=temperature, max_tokens=max_tokens
-            )
-        except Exception as exc:  # pragma: no cover - network/runtime safety net
-            log.warning("Provider %s failed (%s); falling back to mock", provider.name, exc)
+        provider_name, provider = self._select_provider_entry(profile)
+        if provider_name == "mock":
             return self._mock.complete(messages, temperature=temperature, max_tokens=max_tokens)
+
+        retries = max(0, self.settings.provider_max_retries)
+        backoff_base = max(0.0, self.settings.provider_retry_backoff_base)
+        attempts = retries + 1
+        for attempt in range(attempts):
+            try:
+                result = provider.complete(
+                    messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                self._record_success(provider_name)
+                return result
+            except Exception as exc:  # pragma: no cover - network/runtime safety net
+                self._record_failure(provider_name)
+                is_last_attempt = attempt == attempts - 1
+                if is_last_attempt:
+                    break
+                if backoff_base > 0.0:
+                    time.sleep(backoff_base * (2**attempt))
+                log.warning(
+                    "Provider %s attempt %d/%d failed (%s), retrying",
+                    provider_name,
+                    attempt + 1,
+                    attempts,
+                    exc,
+                )
+        log.warning("Provider %s failed after retries; falling back to mock", provider_name)
+        return self._mock.complete(messages, temperature=temperature, max_tokens=max_tokens)
