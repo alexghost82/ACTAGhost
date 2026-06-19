@@ -25,7 +25,13 @@ class Settings(BaseSettings):
     # --- Core ---
     data_dir: Path = Field(default=Path(".acta"))
     log_level: str = Field(default="INFO")
+    log_json: bool = Field(default=False)
     app_name: str = Field(default="ACTA GHOST")
+    metrics_enabled: bool = Field(default=True)
+    otel_enabled: bool = Field(default=False)
+    sentry_dsn: str | None = Field(default=None)
+    audit_max_buffer: int = Field(default=1000)
+    audit_log_max_bytes: int = Field(default=5_242_880)
 
     # --- Security ---
     encryption_key: str | None = Field(default=None)

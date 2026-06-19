@@ -6,6 +6,7 @@ import time
 from contextlib import asynccontextmanager
 from collections import defaultdict, deque
 from pathlib import Path
+import uuid
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status as http_status
@@ -18,7 +19,14 @@ from acta.agents import AgentServices
 from acta.channels import ChannelHub, TelegramChannel, WhatsAppChannel
 from acta.config import get_settings
 from acta.identity import IdentityRegistry, Role, User
-from acta.logging_config import configure_logging, get_logger
+from acta.logging_config import (
+    bind_request_context,
+    configure_logging,
+    get_logger,
+    reset_request_context,
+    update_user_context,
+)
+from acta.observability import ObservabilityRuntime
 from acta.orchestrator import Orchestrator
 from acta.schemas import MemoryKind, Modality, UserRequest
 
@@ -88,9 +96,12 @@ class InMemoryRateLimitMiddleware:
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    configure_logging(settings.log_level)
+    configure_logging(settings.log_level, settings.log_json)
     services = AgentServices.build(settings)
     orchestrator = Orchestrator(services)
+    # A5 observability: optional metrics/tracing/sentry wrappers.
+    observability = ObservabilityRuntime(settings)
+    observability.instrument_orchestrator(orchestrator)
     identity = IdentityRegistry.from_settings(settings)
 
     # Messaging channels (Telegram / WhatsApp).
@@ -106,14 +117,18 @@ def create_app() -> FastAPI:
 
     def _require_api_auth(request: Request) -> User:
         if not identity.auth_configured:
-            return identity.default_session().principal
+            principal = identity.default_session().principal
+            update_user_context(principal.user_id)
+            return principal
         session = identity.resolve(_extract_credential(request))
         if session is not None:
+            update_user_context(session.principal.user_id)
             return session.principal
         raise HTTPException(status_code=http_status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        observability.init_sentry()
         if not identity.auth_configured:
             log.warning("SEC-1/SEC-4: API authentication token is not configured; API remains unauthenticated")
         if not settings.whatsapp_app_secret:
@@ -144,6 +159,7 @@ def create_app() -> FastAPI:
     app.state.hub = hub
     app.state.telegram = telegram
     app.state.whatsapp = whatsapp
+    app.state.observability = observability
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.api_cors_origins,
@@ -154,10 +170,41 @@ def create_app() -> FastAPI:
     app.add_middleware(BodySizeLimitMiddleware, max_body_size=settings.api_max_body_size_bytes)
     app.add_middleware(InMemoryRateLimitMiddleware, per_minute=settings.api_rate_limit_per_minute)
 
+    # A5 observability: request context + request_id propagation.
+    @app.middleware("http")
+    async def request_context_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
+        request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
+        request.state.request_id = request_id
+        tokens = bind_request_context(request_id=request_id)
+        started = time.perf_counter()
+        status_code = 500
+        response = None
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+        except Exception:
+            status_code = 500
+            raise
+        finally:
+            elapsed = time.perf_counter() - started
+            observability.observe_http(request.method, request.url.path, status_code, elapsed)
+            log.info("http_request method=%s path=%s status=%s", request.method, request.url.path, status_code)
+            reset_request_context(tokens)
+        if response is None:
+            return JSONResponse({"detail": "internal server error"}, status_code=500)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
     # -- API routes -------------------------------------------------------- #
     @app.get("/api/health")
     def health() -> dict[str, Any]:
         return {"status": "ok", "app": settings.app_name, "version": app.version}
+
+    @app.get("/metrics")
+    def metrics() -> PlainTextResponse:
+        # A5 observability choice: metrics endpoint is intentionally unauthenticated.
+        status_code, payload, content_type = observability.metrics_payload()
+        return PlainTextResponse(payload.decode("utf-8"), status_code=status_code, media_type=content_type)
 
     @app.get("/api/status")
     def status(_: User = Depends(_require_api_auth)) -> dict[str, Any]:
