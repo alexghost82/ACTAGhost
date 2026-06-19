@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic import field_validator
@@ -23,6 +24,7 @@ class Settings(BaseSettings):
     )
 
     # --- Core ---
+    env: Literal["dev", "prod"] = Field(default="dev")
     data_dir: Path = Field(default=Path(".acta"))
     log_level: str = Field(default="INFO")
     log_json: bool = Field(default=False)
@@ -140,5 +142,9 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
+    if settings.env == "prod" and not settings.api_auth_token and not settings.api_users:
+        raise ValueError(
+            "ACTA_ENV=prod requires API authentication (ACTA_API_AUTH_TOKEN or ACTA_API_USERS)."
+        )
     settings.ensure_data_dir()
     return settings

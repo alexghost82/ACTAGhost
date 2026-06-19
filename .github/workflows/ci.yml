@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    env:
+      ACTA_DEFAULT_PROVIDER: mock
+      ACTA_ENV: dev
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies (including dev)
+        run: uv sync --all-extras --dev
+
+      - name: Run Ruff
+        run: uv run ruff check .
+
+      - name: Run pytest
+        run: uv run pytest -q
+
+      - name: Run coverage (optional)
+        run: |
+          if uv run python -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('pytest_cov') else 1)"; then
+            uv run pytest -q --cov=acta --cov-report=term-missing
+          else
+            echo "pytest-cov not installed; skipping optional coverage step."
+          fi

@@ -1,0 +1,12 @@
+.git
+.venv
+.acta
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+tests/.pytest_cache/
+*.db
+*.key
+.env

@@ -1,0 +1,29 @@
+services:
+  acta:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: acta:dev
+    ports:
+      - "8765:8765"
+    environment:
+      ACTA_DEFAULT_PROVIDER: mock
+      ACTA_ENV: dev
+      ACTA_DATA_DIR: /.acta
+      ACTA_LOG_LEVEL: INFO
+    volumes:
+      - acta_data:/.acta
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import json,sys,urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8765/api/ready', timeout=3);
+          d=json.load(r); sys.exit(0 if r.status == 200 and d.get('status') == 'ready' else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  acta_data:
