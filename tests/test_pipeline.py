@@ -56,6 +56,24 @@ def test_language_override_metadata(orchestrator):
     assert resp.language == "he"
 
 
+def test_small_talk_fast_path_short_circuits_full_pipeline(orchestrator, services):
+    before = services.memory.stats().get(MemoryKind.EPISODIC.value, 0)
+    resp = orchestrator.run(UserRequest(text="hi"))
+    after = services.memory.stats().get(MemoryKind.EPISODIC.value, 0)
+
+    assert resp.answer
+    assert resp.intent is not None
+    assert resp.intent.type.value == "small_talk"
+    agents_in_trace = [t.agent for t in resp.trace]
+    assert "intent" in agents_in_trace
+    assert "reasoning" not in agents_in_trace
+    assert "planning" not in agents_in_trace
+    assert "decision" not in agents_in_trace
+    assert agents_in_trace.count("ui") == 1
+    assert len(resp.trace) <= 5
+    assert after == before + 1
+
+
 def test_integration_directive_executes(orchestrator):
     req = UserRequest(
         text="Отправь данные через api",

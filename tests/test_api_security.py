@@ -236,3 +236,69 @@ def test_whatsapp_webhook_rejects_missing_or_bad_signature(monkeypatch):
         headers={**headers, "X-Hub-Signature-256": "sha256=deadbeef"},
     )
     assert bad.status_code == 403
+
+
+def test_memory_and_audit_pagination(monkeypatch):
+    client = _client_with_env(
+        monkeypatch,
+        ACTA_DEFAULT_PROVIDER="mock",
+        ACTA_API_USERS="alice-token:alice:user",
+    )
+    as_alice = {"Authorization": "Bearer alice-token"}
+    for idx in range(3):
+        resp = client.post("/api/chat", json={"text": f"message {idx}"}, headers=as_alice)
+        assert resp.status_code == 200
+
+    mem = client.get("/api/memory", params={"limit": 2, "offset": 1}, headers=as_alice)
+    assert mem.status_code == 200
+    payload = mem.json()
+    assert len(payload["records"]) <= 2
+    assert payload["limit"] == 2
+    assert payload["offset"] == 1
+    assert "pagination" in payload
+
+    audit = client.get("/api/audit", params={"limit": 2, "offset": 1}, headers=as_alice)
+    assert audit.status_code == 200
+    audit_payload = audit.json()
+    assert len(audit_payload["entries"]) <= 2
+    assert audit_payload["limit"] == 2
+    assert audit_payload["offset"] == 1
+    assert "pagination" in audit_payload
+
+    mem_v1 = client.get("/api/v1/memory", params={"limit": 1}, headers=as_alice)
+    assert mem_v1.status_code == 200
+    audit_v1 = client.get("/api/v1/audit", params={"limit": 1}, headers=as_alice)
+    assert audit_v1.status_code == 200
+
+
+def test_history_is_paginated_and_principal_scoped(monkeypatch):
+    client = _client_with_env(
+        monkeypatch,
+        ACTA_DEFAULT_PROVIDER="mock",
+        ACTA_API_USERS="alice-token:alice:user,bob-token:bob:user,admin-token:owner:admin",
+    )
+    as_alice = {"Authorization": "Bearer alice-token"}
+    as_bob = {"Authorization": "Bearer bob-token"}
+    as_admin = {"Authorization": "Bearer admin-token"}
+
+    for text in ("first", "second", "third"):
+        assert client.post("/api/chat", json={"text": text}, headers=as_alice).status_code == 200
+    assert client.post("/api/chat", json={"text": "bob msg"}, headers=as_bob).status_code == 200
+
+    own = client.get("/api/history", params={"limit": 2}, headers=as_alice)
+    assert own.status_code == 200
+    own_payload = own.json()
+    assert len(own_payload["items"]) <= 2
+    assert own_payload["limit"] == 2
+    assert all("assistant_text" in item for item in own_payload["items"])
+
+    forbidden = client.get("/api/history", params={"user_id": "bob"}, headers=as_alice)
+    assert forbidden.status_code == 403
+
+    admin_scoped = client.get("/api/history", params={"user_id": "bob", "limit": 5}, headers=as_admin)
+    assert admin_scoped.status_code == 200
+    items = admin_scoped.json()["items"]
+    assert len(items) >= 1
+    assert any("bob msg" in (item.get("user_text") or "") for item in items)
+
+    assert client.get("/api/v1/history", params={"limit": 1}, headers=as_alice).status_code == 200
