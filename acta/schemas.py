@@ -41,6 +41,33 @@ class Modality(str, Enum):
     VOICE = "voice"
     IMAGE = "image"
     VIDEO = "video"
+    # AGENT extension: arbitrary visual sensor input (thermal, infrared, depth…).
+    SENSOR = "sensor"
+
+
+class SensorType(str, Enum):
+    """Visual sensor families supported by the AGENT vision subsystem."""
+
+    RGB = "rgb"
+    GRAYSCALE = "grayscale"
+    INFRARED = "infrared"
+    THERMAL = "thermal"
+    DEPTH = "depth"
+    POINTCLOUD = "pointcloud"
+    MULTISPECTRAL = "multispectral"
+
+    @property
+    def channels(self) -> int:
+        """Default channel count for a freshly captured frame of this type."""
+        return {
+            SensorType.RGB: 3,
+            SensorType.GRAYSCALE: 1,
+            SensorType.INFRARED: 1,
+            SensorType.THERMAL: 1,
+            SensorType.DEPTH: 1,
+            SensorType.POINTCLOUD: 3,
+            SensorType.MULTISPECTRAL: 5,
+        }[self]
 
 
 class TaskStatus(str, Enum):
@@ -56,6 +83,8 @@ class MemoryKind(str, Enum):
     SEMANTIC = "semantic"
     PERSONAL = "personal"
     PROCEDURAL = "procedural"
+    # AGENT extension: visual stream annotations / embeddings / frame metadata.
+    VISUAL = "visual"
 
 
 # --------------------------------------------------------------------------- #

@@ -23,9 +23,18 @@ DEFAULT_GRANTS: dict[str, set[str]] = {
     "orchestrator": {"orchestrate", "agent.invoke"},
     "memory": {"memory.read", "memory.write"},
     "knowledge_graph": {"kg.read", "kg.write"},
-    "integration": {"integration.network", "integration.fs", "system.control"},
+    "integration": {
+        "integration.network",
+        "integration.fs",
+        "system.control",
+        "camera.read",
+        "camera.manage",
+        "vision.process",
+    },
     "security": {"audit", "permission.check"},
-    "multimodal": {"media.process"},
+    # AGENT extension: the multimodal agent may run the VLM vision pipeline and
+    # read camera frames; managing cameras stays with the integration layer.
+    "multimodal": {"media.process", "vision.process", "camera.read"},
     # specialized worker agents
     "research": {"reason", "kg.read", "memory.read"},
     "automation": {"integration.network", "integration.fs"},

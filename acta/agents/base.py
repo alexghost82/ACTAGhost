@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from acta.config import Settings, get_settings
-from acta.integration import ConnectorRegistry, default_registry
+from acta.integration import CameraConnector, ConnectorRegistry, default_registry
 from acta.knowledge_graph import KnowledgeGraph
 from acta.logging_config import get_logger
 from acta.memory import MemoryStore
@@ -14,6 +14,7 @@ from acta.multimodal import MultimodalProcessor
 from acta.providers import AIRouter, ChatMessage
 from acta.schemas import AgentResult
 from acta.security import AuditLog, PermissionRegistry
+from acta.vision import VisionService
 
 if TYPE_CHECKING:
     from acta.orchestrator.state import PipelineState
@@ -31,6 +32,7 @@ class AgentServices:
     permissions: PermissionRegistry
     connectors: ConnectorRegistry
     multimodal: MultimodalProcessor
+    vision: VisionService
 
     @classmethod
     def build(cls, settings: Settings | None = None) -> "AgentServices":
@@ -41,15 +43,26 @@ class AgentServices:
         if not settings.allow_system_control:
             for agent in ("system", "integration"):
                 permissions.revoke(agent, "system.control")
+        audit = AuditLog(settings)
+        vision = VisionService.build(
+            settings,
+            router=router,
+            memory=memory,
+            audit=audit,
+            permissions=permissions,
+        )
+        connectors = default_registry(settings)
+        connectors.register(CameraConnector(vision))
         return cls(
             settings=settings,
             router=router,
             memory=memory,
             kg=KnowledgeGraph(settings),
-            audit=AuditLog(settings),
+            audit=audit,
             permissions=permissions,
-            connectors=default_registry(settings),
+            connectors=connectors,
             multimodal=MultimodalProcessor(settings=settings, router=router),
+            vision=vision,
         )
 
 

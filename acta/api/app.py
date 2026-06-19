@@ -43,6 +43,28 @@ class ChatRequest(BaseModel):
     attachments: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class CameraCreate(BaseModel):
+    name: str = Field(..., description="Human-readable camera name")
+    sensor_type: str = Field(default="rgb")
+    width: int = Field(default=1280, ge=1)
+    height: int = Field(default=720, ge=1)
+    fps: int = Field(default=30, ge=1)
+    source: str = Field(default="synthetic")
+    id: str | None = None
+
+
+class VisionAnalyzeRequest(BaseModel):
+    camera_id: str | None = None
+    instruction: str | None = None
+    user_id: str | None = None
+    # Inline frame analysis (used when no camera_id is supplied).
+    sensor_type: str = Field(default="rgb")
+    width: int | None = None
+    height: int | None = None
+    source: str | None = None
+    persist: bool = True
+
+
 DEFAULT_PAGE_LIMIT = 20
 MAX_PAGE_LIMIT = 100
 MAX_OFFSET = 1000
@@ -226,7 +248,7 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.api_cors_origins,
         allow_credentials=False,
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Hub-Signature-256"],
     )
     app.add_middleware(BodySizeLimitMiddleware, max_body_size=settings.api_max_body_size_bytes)
@@ -483,6 +505,105 @@ def create_app() -> FastAPI:
             },
             "whatsapp": {"enabled": whatsapp.enabled},
         }
+
+    # -- AGENT: Vision / cameras ------------------------------------------- #
+    @app.get("/api/v1/vision/status")
+    @app.get("/api/vision/status")
+    def vision_status(_: User = Depends(_require_api_auth)) -> dict[str, Any]:
+        vision = services.vision
+        return {
+            "enabled": vision.enabled,
+            "vlm_provider": settings.vlm_provider,
+            "quantization": settings.vlm_quantization,
+            "patch_size": settings.vision_patch_size,
+            "max_patches": settings.vision_max_patches,
+            "pixel_shuffle_scale": settings.vision_pixel_shuffle_scale,
+            "lora_enabled": settings.vision_lora_enabled,
+            "lora_adapters": vision.lora.names(),
+            "cameras": len(vision.cameras.list()),
+        }
+
+    @app.get("/api/v1/cameras")
+    @app.get("/api/cameras")
+    def list_cameras(_: User = Depends(_require_api_auth)) -> dict[str, Any]:
+        cams = [c.to_dict() for c in services.vision.cameras.list()]
+        return {"cameras": cams, "count": len(cams)}
+
+    @app.post("/api/v1/cameras")
+    @app.post("/api/cameras")
+    def register_camera(
+        req: CameraCreate, principal: User = Depends(_require_api_auth)
+    ) -> JSONResponse:
+        try:
+            spec = services.vision.cameras.add(
+                req.name,
+                sensor_type=req.sensor_type,
+                width=req.width,
+                height=req.height,
+                fps=req.fps,
+                source=req.source,
+                camera_id=req.id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        services.audit.record(
+            "integration", "camera_registered", camera_id=spec.id, user_id=principal.user_id
+        )
+        return JSONResponse({"ok": True, "camera": spec.to_dict()})
+
+    @app.delete("/api/v1/cameras/{camera_id}")
+    @app.delete("/api/cameras/{camera_id}")
+    def delete_camera(camera_id: str, _: User = Depends(_require_api_auth)) -> dict[str, Any]:
+        removed = services.vision.cameras.remove(camera_id)
+        if not removed:
+            raise HTTPException(status_code=404, detail="camera not found")
+        return {"ok": True}
+
+    @app.post("/api/v1/vision/analyze")
+    @app.post("/api/vision/analyze")
+    def vision_analyze(
+        req: VisionAnalyzeRequest, principal: User = Depends(_require_api_auth)
+    ) -> JSONResponse:
+        if not services.vision.enabled:
+            raise HTTPException(status_code=409, detail="vision subsystem is disabled")
+        effective_user_id = _resolve_effective_user_id(principal, req.user_id)
+        try:
+            if req.camera_id:
+                analysis = services.vision.capture_and_analyze(
+                    req.camera_id,
+                    req.instruction,
+                    user_id=effective_user_id,
+                    agent="integration",
+                    persist=req.persist,
+                )
+            elif req.width and req.height:
+                from acta.schemas import SensorType
+                from acta.vision.frames import VisionFrame
+
+                frame = VisionFrame(
+                    width=req.width,
+                    height=req.height,
+                    sensor_type=SensorType(req.sensor_type),
+                    camera_id="api-frame",
+                    source=req.source,
+                    metadata={"path": req.source} if req.source else {},
+                )
+                analysis = services.vision.pipeline.analyze_frame(
+                    frame,
+                    req.instruction,
+                    user_id=effective_user_id,
+                    agent="integration",
+                    persist=req.persist,
+                )
+            else:
+                raise HTTPException(
+                    status_code=422, detail="provide camera_id or inline width+height"
+                )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="camera not found") from None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return JSONResponse({"ok": True, "analysis": analysis.to_dict()})
 
     # -- Telegram webhook (alternative to polling) ------------------------- #
     @app.post("/webhooks/telegram")

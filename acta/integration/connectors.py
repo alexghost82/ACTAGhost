@@ -90,6 +90,60 @@ class FileSystemConnector(Connector):
             return {"ok": False, "error": str(exc)}
 
 
+class CameraConnector(Connector):
+    """Bridge the integration layer to the AGENT vision subsystem.
+
+    Exposes camera management and frame analysis as connector actions so the
+    rest of ACTA can drive cameras through the uniform connector interface.
+    Constructed with a ``VisionService`` (see :mod:`acta.vision.pipeline`).
+    """
+
+    name = "camera"
+
+    def __init__(self, vision_service: Any) -> None:
+        self._vision = vision_service
+
+    def execute(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return self._dispatch(action, params)
+        except KeyError as exc:
+            return {"ok": False, "error": f"not found: {exc}"}
+        except Exception as exc:  # surface failures uniformly
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    def _dispatch(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
+        cameras = self._vision.cameras
+        if action == "list":
+            return {"ok": True, "cameras": [c.to_dict() for c in cameras.list()]}
+        if action == "register":
+            spec = cameras.add(
+                params.get("name", "camera"),
+                sensor_type=params.get("sensor_type", "rgb"),
+                width=int(params.get("width", 1280)),
+                height=int(params.get("height", 720)),
+                fps=int(params.get("fps", 30)),
+                source=params.get("source", "synthetic"),
+                camera_id=params.get("id"),
+            )
+            return {"ok": True, "camera": spec.to_dict()}
+        if action == "remove":
+            return {"ok": cameras.remove(params["id"])}
+        if action in ("enable", "disable"):
+            ok = cameras.set_enabled(params["id"], action == "enable")
+            return {"ok": ok}
+        if action in ("capture", "analyze"):
+            analysis = self._vision.capture_and_analyze(
+                params["id"],
+                params.get("instruction"),
+                user_id=params.get("user_id", "default"),
+                agent="integration",
+                persist=bool(params.get("persist", True)),
+                sequence=int(params.get("sequence", 0)),
+            )
+            return {"ok": True, "analysis": analysis.to_dict()}
+        return {"ok": False, "error": f"unknown action '{action}'"}
+
+
 class ConnectorRegistry:
     def __init__(self) -> None:
         self._connectors: dict[str, Connector] = {}

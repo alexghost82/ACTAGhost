@@ -196,6 +196,72 @@ function renderInspector(resp) {
   });
 }
 
+async function loadVision() {
+  try {
+    const r = await fetch("/api/vision/status");
+    if (!r.ok) return;
+    const s = await r.json();
+    $("#vision-state").textContent = s.enabled
+      ? `${s.vlm_provider}/${s.quantization}`
+      : "выкл";
+    await loadCameras();
+  } catch (e) { /* ignore */ }
+}
+
+async function loadCameras() {
+  try {
+    const r = await fetch("/api/cameras");
+    if (!r.ok) return;
+    const data = await r.json();
+    const list = $("#cameras");
+    list.innerHTML = "";
+    if (!data.count) list.appendChild(el("div", "empty", "Камер нет."));
+    for (const c of data.cameras) {
+      const item = el("div", "camera");
+      item.appendChild(el("div", "name", `${escapeHtml(c.name)} · ${c.sensor_type} ${c.width}×${c.height}`));
+      const btn = el("button", "cam-analyze", "Анализ");
+      btn.addEventListener("click", () => analyzeCamera(c.id));
+      item.appendChild(btn);
+      list.appendChild(item);
+    }
+  } catch (e) { /* ignore */ }
+}
+
+async function addCamera() {
+  const name = $("#cam-name").value.trim() || "camera";
+  const sensor = $("#cam-sensor").value;
+  try {
+    await fetch("/api/cameras", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, sensor_type: sensor }),
+    });
+    $("#cam-name").value = "";
+    await loadCameras();
+  } catch (e) { /* ignore */ }
+}
+
+async function analyzeCamera(cameraId) {
+  const out = $("#vision-result");
+  out.textContent = "…";
+  try {
+    const r = await fetch("/api/vision/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ camera_id: cameraId }),
+    });
+    const data = await r.json();
+    if (!r.ok) { out.textContent = data.detail || "ошибка"; return; }
+    const a = data.analysis;
+    out.innerHTML = "";
+    out.appendChild(el("div", "vr-text", escapeHtml(a.analysis.text)));
+    out.appendChild(el("div", "vr-meta",
+      `tiles: ${a.patch_plan.tile_count} · tokens: ${a.visual_tokens} · provider: ${escapeHtml(a.analysis.provider)}`));
+  } catch (e) {
+    out.textContent = String(e);
+  }
+}
+
 document.querySelectorAll(".tab").forEach((tab) => {
   tab.addEventListener("click", () => {
     document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
@@ -242,6 +308,10 @@ document.querySelectorAll(".lang").forEach((b) => {
   b.addEventListener("click", () => applyLang(b.dataset.lang));
 });
 
+const camAddBtn = $("#cam-add");
+if (camAddBtn) camAddBtn.addEventListener("click", addCamera);
+
 applyLang("ru");
 loadStatus();
 loadAgents();
+loadVision();

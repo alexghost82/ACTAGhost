@@ -150,3 +150,30 @@ img.avatar { object-fit: cover; background: #000; border: 1px solid var(--border
   .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   .sidebar, .inspector { display: none; }
 }
+
+/* AGENT: Vision / cameras panel */
+.vision-form { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+.vision-form input, .vision-form select {
+  flex: 1; min-width: 0; background: var(--bg-elev); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; font-size: 12px;
+}
+.vision-form button, .cam-analyze {
+  background: var(--accent); color: #1a1500; border: none; border-radius: 8px;
+  padding: 6px 10px; font-weight: 600; cursor: pointer; font-size: 12px;
+}
+.vision-form button:hover, .cam-analyze:hover { background: var(--accent-2); }
+.camera-list { display: flex; flex-direction: column; gap: 6px; }
+.camera {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: 10px; padding: 8px 10px;
+}
+.camera .name { font-size: 12px; color: var(--text); }
+.vision-result {
+  margin-top: 10px; font-size: 12px; color: var(--muted);
+  background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: 10px; padding: 8px 10px; min-height: 0; white-space: pre-wrap;
+}
+.vision-result:empty { display: none; }
+.vision-result .vr-text { color: var(--text); margin-bottom: 4px; }
+.vision-result .vr-meta { color: var(--accent-2); font-size: 11px; }

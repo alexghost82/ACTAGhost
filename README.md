@@ -35,6 +35,11 @@ upgrades transparently to OpenAI / Anthropic / Gemini / Ollama when configured.
 - **Integration Layer** — pluggable connector framework (echo / HTTP / sandboxed
   filesystem) ready for REST, GraphQL, Webhooks and MCP.
 - **Multimodal Layer** — text in/out today; clean hooks for Whisper STT and Piper TTS.
+- **Vision / VLM subsystem (AGENT)** — advanced multimodal visual processing with
+  Vision-Language Models across many sensor families (RGB, infrared, thermal,
+  depth, point cloud, multispectral): dynamic patch-splitting + pixel shuffle,
+  LoRA visual instruction tuning, quantized local + cloud + offline VLM
+  providers, an event-driven pipeline, a camera registry and a web panel.
 - **Web UI** — a modern chat interface with a live agent panel and an execution
   inspector (trace / plan / intent).
 
@@ -99,6 +104,46 @@ RUS / עברית / ENG switcher with full RTL layout for Hebrew. Force a languag
 | **WhatsApp** | Set `ACTA_WHATSAPP_TOKEN`, `ACTA_WHATSAPP_PHONE_ID`, `ACTA_WHATSAPP_VERIFY_TOKEN`. Point the Meta webhook to `/webhooks/whatsapp`. |
 
 Each messenger user gets isolated memory (`telegram:<id>` / `whatsapp:<phone>`).
+
+## Vision & cameras (AGENT)
+
+The **AGENT** extension adds advanced multimodal visual processing with
+Vision-Language Models. It is **off by default** and, like the rest of ACTA,
+runs fully offline: when enabled it always has a deterministic offline VLM
+fallback, so no GPU, model or credentials are required.
+
+```bash
+export ACTA_VISION_ENABLED=true        # enable the subsystem
+export ACTA_VLM_PROVIDER=auto          # local (quantized) -> cloud -> offline mock
+uv run acta
+```
+
+Register a camera/sensor and analyze a frame:
+
+```bash
+curl -s http://127.0.0.1:8765/api/cameras -H 'Content-Type: application/json' \
+  -d '{"name":"gate","sensor_type":"thermal","width":640,"height":480}'
+
+curl -s http://127.0.0.1:8765/api/vision/analyze -H 'Content-Type: application/json' \
+  -d '{"camera_id":"<id>","instruction":"detect people and anomalies"}' | python -m json.tool
+```
+
+Supported sensor families: `rgb`, `grayscale`, `infrared`, `thermal`, `depth`,
+`pointcloud`, `multispectral`. Each analysis runs **dynamic patch-splitting**
+(aspect-ratio-optimal tiling) and **pixel shuffle** (token-budget reduction),
+calls the configured VLM, persists an encrypted `visual` memory record and
+writes an audit entry. The chat pipeline also analyzes `sensor`/`frame`
+attachments and `metadata.vision = {"camera_id": ...}` automatically.
+
+| Provider | When used | Notes |
+|----------|-----------|-------|
+| `local` | Ollama vision model (e.g. `llava`) reachable | honors `ACTA_VLM_QUANTIZATION` (int4/int8/fp16) |
+| `cloud` | a real router provider (OpenAI/Gemini) + image source | reuses the AI Router vision hook |
+| `mock` | always | deterministic offline analysis, used as final fallback |
+
+**Visual instruction tuning** uses a dependency-free LoRA adapter
+(`acta.vision.lora`) with a real low-rank residual and SGD fit, serializable to
+JSON — usable entirely offline.
 
 ## Pipeline flow
 
@@ -212,6 +257,11 @@ The MVP needs none of these, but the interfaces are ready for them:
 | `GET` | `/api/memory` | Recent memory records |
 | `GET` | `/api/audit` | Tail of the audit log |
 | `GET` | `/api/channels` | Telegram / WhatsApp status |
+| `GET` | `/api/vision/status` | VLM subsystem config & loaded LoRA adapters |
+| `GET` | `/api/cameras` | List registered cameras / sensors |
+| `POST` | `/api/cameras` | Register a camera / sensor |
+| `DELETE` | `/api/cameras/{id}` | Remove a camera |
+| `POST` | `/api/vision/analyze` | Analyze a camera frame or inline frame with the VLM |
 | `GET` | `/api/health` | Health check |
 | `POST` | `/webhooks/telegram` | Telegram webhook (webhook mode) |
 | `GET/POST` | `/webhooks/whatsapp` | WhatsApp verify / inbound messages |
@@ -227,8 +277,10 @@ acta/
   security/            # crypto, audit, permissions
   memory/              # encrypted SQLite memory store (4 kinds)
   knowledge_graph/     # networkx graph + search
-  integration/         # connector framework + SystemConnector (full OS control)
+  integration/         # connector framework + SystemConnector + CameraConnector
   multimodal/          # input normalization & output rendering
+  vision/              # AGENT VLM subsystem: frames, preprocess (patch split +
+                       #   pixel shuffle), LoRA tuning, cameras, event pipeline
   agents/              # the 12 sub-agents + workers (research/coding/automation/system)
   orchestrator/        # pipeline state + orchestrator
   channels/            # Telegram & WhatsApp adapters + channel hub

@@ -6,6 +6,7 @@ GraphQL, Webhook and MCP connectors can be added without touching the agents.
 """
 
 from acta.integration.connectors import (
+    CameraConnector,
     Connector,
     ConnectorRegistry,
     EchoConnector,
@@ -16,6 +17,7 @@ from acta.integration.connectors import (
 from acta.integration.system import SystemConnector
 
 __all__ = [
+    "CameraConnector",
     "Connector",
     "ConnectorRegistry",
     "EchoConnector",

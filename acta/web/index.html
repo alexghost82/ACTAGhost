@@ -34,6 +34,25 @@
         </div>
       </section>
 
+      <section class="panel" id="vision-panel">
+        <h2>Камеры и VLM <span id="vision-state" class="pill">—</span></h2>
+        <div class="vision-form">
+          <input id="cam-name" type="text" placeholder="имя камеры" />
+          <select id="cam-sensor">
+            <option value="rgb">RGB</option>
+            <option value="grayscale">Grayscale</option>
+            <option value="infrared">Infrared</option>
+            <option value="thermal">Thermal</option>
+            <option value="depth">Depth</option>
+            <option value="pointcloud">PointCloud</option>
+            <option value="multispectral">Multispectral</option>
+          </select>
+          <button id="cam-add" type="button">Добавить</button>
+        </div>
+        <div id="cameras" class="camera-list"></div>
+        <div id="vision-result" class="vision-result"></div>
+      </section>
+
       <section class="panel grow">
         <h2>Агенты <span id="agent-count" class="pill"></span></h2>
         <div id="agents" class="agent-list"></div>

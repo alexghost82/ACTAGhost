@@ -92,6 +92,37 @@ class Settings(BaseSettings):
         default="Describe this image succinctly and factually for downstream reasoning."
     )
 
+    # --- AGENT: Vision-Language Models (VLM) subsystem ---
+    # Master switch for the advanced visual processing pipeline. Off by default
+    # so existing offline behavior is unchanged; the pipeline always has a
+    # deterministic offline fallback when enabled.
+    vision_enabled: bool = Field(default=False)
+    # Provider strategy: "mock" (offline, deterministic), "cloud" (router-backed
+    # vision models), "local" (quantized local VLM), or "auto" (local→cloud→mock).
+    vlm_provider: str = Field(default="auto")
+    vlm_local_host: str = Field(default="http://localhost:11434")
+    vlm_local_model: str = Field(default="llava")
+    vlm_cloud_profile: str = Field(default="multimodal")
+    # Quantization for local execution: "none" | "int8" | "int4" | "fp16".
+    vlm_quantization: str = Field(default="int4")
+    vlm_max_tokens: int = Field(default=256)
+    vlm_instruction: str = Field(
+        default="Analyze this frame and report salient objects, anomalies and context."
+    )
+    # Patch splitting + pixel shuffle (multimodal processor tuning).
+    vision_patch_size: int = Field(default=448)
+    vision_max_patches: int = Field(default=12)
+    vision_min_patches: int = Field(default=1)
+    vision_pixel_shuffle_scale: float = Field(default=0.5)
+    vision_hidden_size: int = Field(default=64)
+    # Visual instruction tuning with LoRA (offline, dependency-free adapter).
+    vision_lora_enabled: bool = Field(default=False)
+    vision_lora_rank: int = Field(default=8)
+    vision_lora_alpha: float = Field(default=16.0)
+    # Synthetic camera frame size used when no hardware/source is available.
+    vision_synthetic_width: int = Field(default=1280)
+    vision_synthetic_height: int = Field(default=720)
+
     # --- Localization ---
     # Default UI/answer language when detection is inconclusive. One of: ru, he, en.
     default_language: str = Field(default="ru")
