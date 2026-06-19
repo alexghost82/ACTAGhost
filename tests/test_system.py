@@ -1,3 +1,6 @@
+import pytest
+
+from acta.security import PermissionDenied
 from acta.integration.system import SystemConnector
 
 
@@ -85,3 +88,21 @@ def test_system_exec_blocks_dangerous_env_overrides(services):
     )
     assert out["ok"] is True
     assert "PATH" in out["blocked_env"]
+
+
+def test_system_control_denied_for_user_role_even_when_enabled(services):
+    _enable_system_control(services)
+    from acta.agents.specialized import SystemAgent
+    from acta.orchestrator.state import PipelineState
+    from acta.schemas import PlanTask, UserRequest
+
+    state = PipelineState(
+        request=UserRequest(
+            user_id="alice",
+            text="system info",
+            metadata={"principal_role": "user"},
+        )
+    )
+    agent = SystemAgent(services)
+    with pytest.raises(PermissionDenied):
+        agent.execute_task(state, PlanTask(agent="system", description="system info"))

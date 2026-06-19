@@ -71,7 +71,12 @@ class BaseAgent:
     # -- public entrypoint ------------------------------------------------- #
     def run(self, state: "PipelineState") -> AgentResult:
         result = AgentResult(agent=self.NAME)
-        self.s.audit.record(self.NAME, "start", request_id=state.request.request_id)
+        self.s.audit.record(
+            self.NAME,
+            "start",
+            request_id=state.request.request_id,
+            user_id=state.request.user_id,
+        )
         try:
             self.handle(state, result)
         except Exception as exc:  # capture so the pipeline can continue
@@ -80,7 +85,12 @@ class BaseAgent:
             self.log.exception("agent %s failed", self.NAME)
         result.done()
         self.s.audit.record(
-            self.NAME, "finish", ok=result.ok, ms=result.duration_ms, summary=result.summary
+            self.NAME,
+            "finish",
+            ok=result.ok,
+            ms=result.duration_ms,
+            summary=result.summary,
+            user_id=state.request.user_id,
         )
         state.results[self.NAME] = result
         return result

@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     fernet_key_path: Path | None = Field(default=None)
     # API token auth (Bearer token or X-API-Key) for protected endpoints.
     api_auth_token: str | None = Field(default=None)
+    # Multi-user credentials: token:user_id:role, comma-separated.
+    api_users: str = Field(default="")
     # API abuse hardening (SEC-9).
     api_max_body_size_bytes: int = Field(default=1_048_576)
     api_rate_limit_per_minute: int = Field(default=120)

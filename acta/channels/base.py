@@ -59,7 +59,12 @@ class ChannelHub:
         request = UserRequest(
             user_id=msg.user_id,
             text=msg.text,
-            metadata={"channel": msg.channel, **msg.metadata},
+            metadata={
+                "channel": msg.channel,
+                "principal_user_id": msg.user_id,
+                "principal_role": "user",
+                **msg.metadata,
+            },
         )
         log.info("[%s] %s: %s", msg.channel, msg.sender_id, msg.text[:80])
         response = self.orchestrator.run(request)
