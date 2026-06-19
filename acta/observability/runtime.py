@@ -20,12 +20,14 @@ class ObservabilityRuntime:
         self._metrics_error: str | None = None
         self._prom_content_type = "text/plain; charset=utf-8"
         self._prom_generate: Callable[[], bytes] | None = None
-        self._request_counter = None
-        self._request_latency = None
-        self._pipeline_step_latency = None
-        self._provider_counter = None
-        self._provider_latency = None
-        self._tracer = None
+        # Optional prometheus/otel objects; typed as Any so the no-dependency
+        # path (None) and the instrumented path share one attribute.
+        self._request_counter: Any = None
+        self._request_latency: Any = None
+        self._pipeline_step_latency: Any = None
+        self._provider_counter: Any = None
+        self._provider_latency: Any = None
+        self._tracer: Any = None
         self._init_metrics()
         self._init_tracing()
 
@@ -157,7 +159,7 @@ class ObservabilityRuntime:
                     ).inc()
                 raise
 
-        wrapped_complete.__acta_observed__ = True
+        setattr(wrapped_complete, "__acta_observed__", True)
         router.complete = wrapped_complete
 
     def _wrap_step_call(self, orchestrator: Any) -> None:
@@ -178,7 +180,7 @@ class ObservabilityRuntime:
                 self._pipeline_step_latency.labels(step=step_name).observe(time.perf_counter() - started)
             return next_step
 
-        wrapped_step.__acta_observed__ = True
+        setattr(wrapped_step, "__acta_observed__", True)
         orchestrator._step = wrapped_step
 
     def _wrap_run_call(self, orchestrator: Any) -> None:
@@ -193,5 +195,5 @@ class ObservabilityRuntime:
             with self.trace_span("orchestrator.run", request_id=request_id, user_id=user_id):
                 return original(request)
 
-        wrapped_run.__acta_observed__ = True
+        setattr(wrapped_run, "__acta_observed__", True)
         orchestrator.run = wrapped_run

@@ -172,7 +172,7 @@ def create_app() -> FastAPI:
 
     # A5 observability: request context + request_id propagation.
     @app.middleware("http")
-    async def request_context_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
+    async def request_context_middleware(request: Request, call_next):
         request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
         request.state.request_id = request_id
         tokens = bind_request_context(request_id=request_id)

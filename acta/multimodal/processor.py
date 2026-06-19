@@ -211,7 +211,7 @@ class MultimodalProcessor:
 
     def _load_faster_whisper_backend(self) -> STTBackend | None:
         try:
-            from faster_whisper import WhisperModel  # type: ignore
+            from faster_whisper import WhisperModel
         except Exception:
             return None
 
@@ -227,7 +227,7 @@ class MultimodalProcessor:
 
     def _load_openai_whisper_backend(self) -> STTBackend | None:
         try:
-            import whisper  # type: ignore
+            import whisper
         except Exception:
             return None
         model = whisper.load_model(self.settings.multimodal_whisper_model)
@@ -244,7 +244,7 @@ class MultimodalProcessor:
         if not self.settings.openai_api_key:
             return None
         try:
-            from openai import OpenAI  # type: ignore
+            from openai import OpenAI
         except Exception:
             return None
         client = OpenAI(api_key=self.settings.openai_api_key)
