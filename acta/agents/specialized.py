@@ -114,9 +114,9 @@ class SystemAgent(WorkerAgent):
     )
 
     def execute_task(self, state, task: PlanTask) -> dict:
-        # SEC-8: real gate is both capability check and runtime setting.
-        # TODO(SEC-8,A2-identity): bind system.control to authenticated user context/roles.
-        self.s.permissions.require(self.NAME, "system.control")
+        # SEC-8: capability + principal role gate.
+        principal_role = str(state.request.metadata.get("principal_role") or "admin")
+        self.s.permissions.require(self.NAME, "system.control", principal_role=principal_role)
         if not self.s.settings.allow_system_control:
             return {
                 "task_id": task.id,

@@ -56,11 +56,14 @@ class PermissionRegistry:
     def has(self, agent: str, capability: str) -> bool:
         return capability in self._grants.get(agent, set())
 
-    def require(self, agent: str, capability: str) -> None:
+    def require(self, agent: str, capability: str, *, principal_role: str | None = None) -> None:
         if not self.has(agent, capability):
             raise PermissionDenied(
                 f"agent '{agent}' lacks capability '{capability}'"
             )
+        # SEC-8: role-aware guard for system control, not just static capabilities.
+        if capability == "system.control" and (principal_role or "admin").lower() != "admin":
+            raise PermissionDenied("system control is restricted to admin principals")
 
     def capabilities(self, agent: str) -> set[str]:
         return set(self._grants.get(agent, set()))

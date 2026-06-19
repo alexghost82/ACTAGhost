@@ -13,6 +13,7 @@ from acta.config import get_settings
 def _client_with_env(monkeypatch, **env):
     keys = [
         "ACTA_API_AUTH_TOKEN",
+        "ACTA_API_USERS",
         "ACTA_WHATSAPP_APP_SECRET",
         "ACTA_API_RATE_LIMIT_PER_MINUTE",
         "ACTA_API_MAX_BODY_SIZE_BYTES",
@@ -44,6 +45,71 @@ def test_api_protected_endpoints_require_token(monkeypatch):
     assert client.get("/api/audit").status_code == 401
     ok = client.get("/api/status", headers={"Authorization": "Bearer secret-token"})
     assert ok.status_code == 200
+
+
+def test_api_without_auth_config_uses_offline_default_admin(monkeypatch):
+    client = _client_with_env(monkeypatch, ACTA_DEFAULT_PROVIDER="mock")
+    chat = client.post("/api/chat", json={"text": "hello", "user_id": "alice"})
+    assert chat.status_code == 200
+    # Offline default admin can scope memory/audit to an arbitrary user.
+    mem = client.get("/api/memory", params={"user_id": "alice"})
+    assert mem.status_code == 200
+    audit = client.get("/api/audit", params={"user_id": "alice"})
+    assert audit.status_code == 200
+
+
+def test_api_users_resolve_principal_and_unknown_is_401(monkeypatch):
+    client = _client_with_env(
+        monkeypatch,
+        ACTA_DEFAULT_PROVIDER="mock",
+        ACTA_API_USERS="alice-token:alice:user,bob-token:bob:user,admin-token:owner:admin",
+    )
+    assert client.get("/api/status").status_code == 401
+    assert client.get("/api/status", headers={"X-API-Key": "alice-token"}).status_code == 200
+    assert client.get("/api/status", headers={"Authorization": "Bearer nope"}).status_code == 401
+
+
+def test_non_admin_cannot_impersonate_or_read_other_users(monkeypatch):
+    client = _client_with_env(
+        monkeypatch,
+        ACTA_DEFAULT_PROVIDER="mock",
+        ACTA_API_USERS="alice-token:alice:user,bob-token:bob:user",
+    )
+    as_alice = {"Authorization": "Bearer alice-token"}
+    # No user_id in body -> request is scoped to principal user_id (alice).
+    ok = client.post("/api/chat", json={"text": "hello"}, headers=as_alice)
+    assert ok.status_code == 200
+    forbidden_chat = client.post(
+        "/api/chat",
+        json={"text": "hello", "user_id": "bob"},
+        headers=as_alice,
+    )
+    assert forbidden_chat.status_code == 403
+    forbidden_mem = client.get("/api/memory", params={"user_id": "bob"}, headers=as_alice)
+    assert forbidden_mem.status_code == 403
+    forbidden_audit = client.get("/api/audit", params={"user_id": "bob"}, headers=as_alice)
+    assert forbidden_audit.status_code == 403
+
+
+def test_admin_can_scope_memory_and_audit_to_other_user(monkeypatch):
+    client = _client_with_env(
+        monkeypatch,
+        ACTA_DEFAULT_PROVIDER="mock",
+        ACTA_API_USERS="alice-token:alice:user,admin-token:owner:admin",
+    )
+    as_alice = {"Authorization": "Bearer alice-token"}
+    as_admin = {"Authorization": "Bearer admin-token"}
+    assert client.post("/api/chat", json={"text": "hello"}, headers=as_alice).status_code == 200
+
+    mem = client.get("/api/memory", params={"user_id": "alice"}, headers=as_admin)
+    assert mem.status_code == 200
+    assert isinstance(mem.json().get("records"), list)
+
+    audit = client.get("/api/audit", params={"user_id": "alice"}, headers=as_admin)
+    assert audit.status_code == 200
+    entries = audit.json()["entries"]
+    assert isinstance(entries, list)
+    assert all(entry["details"].get("user_id") == "alice" for entry in entries)
 
 
 def test_whatsapp_webhook_signature_checked(monkeypatch):

@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from acta.agents import AgentServices
 from acta.channels import ChannelHub, TelegramChannel, WhatsAppChannel
 from acta.config import get_settings
+from acta.identity import IdentityRegistry, Role, User
 from acta.logging_config import configure_logging, get_logger
 from acta.orchestrator import Orchestrator
 from acta.schemas import MemoryKind, Modality, UserRequest
@@ -27,7 +28,7 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 class ChatRequest(BaseModel):
     text: str = Field(..., description="User message")
-    user_id: str = "default"
+    user_id: str | None = None
     modality: Modality = Modality.TEXT
     metadata: dict[str, Any] = Field(default_factory=dict)
     attachments: list[dict[str, Any]] = Field(default_factory=list)
@@ -90,26 +91,30 @@ def create_app() -> FastAPI:
     configure_logging(settings.log_level)
     services = AgentServices.build(settings)
     orchestrator = Orchestrator(services)
+    identity = IdentityRegistry.from_settings(settings)
 
     # Messaging channels (Telegram / WhatsApp).
     hub = ChannelHub(orchestrator)
     telegram = TelegramChannel(hub, settings)
     whatsapp = WhatsAppChannel(hub, settings)
 
-    def _require_api_auth(request: Request) -> None:
-        token = settings.api_auth_token
-        if not token:
-            return
+    def _extract_credential(request: Request) -> str | None:
         auth = request.headers.get("Authorization", "")
         api_key = request.headers.get("X-API-Key")
         bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else None
-        if bearer == token or api_key == token:
-            return
+        return bearer or api_key
+
+    def _require_api_auth(request: Request) -> User:
+        if not identity.auth_configured:
+            return identity.default_session().principal
+        session = identity.resolve(_extract_credential(request))
+        if session is not None:
+            return session.principal
         raise HTTPException(status_code=http_status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        if not settings.api_auth_token:
+        if not identity.auth_configured:
             log.warning("SEC-1/SEC-4: API authentication token is not configured; API remains unauthenticated")
         if not settings.whatsapp_app_secret:
             log.warning("SEC-3: WhatsApp app secret is not configured; webhook signature checks are disabled")
@@ -155,7 +160,7 @@ def create_app() -> FastAPI:
         return {"status": "ok", "app": settings.app_name, "version": app.version}
 
     @app.get("/api/status")
-    def status(_: None = Depends(_require_api_auth)) -> dict[str, Any]:
+    def status(_: User = Depends(_require_api_auth)) -> dict[str, Any]:
         return {
             "providers": services.router.available_providers(),
             "default_provider": settings.default_provider,
@@ -165,7 +170,7 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/api/agents")
-    def agents(_: None = Depends(_require_api_auth)) -> dict[str, Any]:
+    def agents(_: User = Depends(_require_api_auth)) -> dict[str, Any]:
         core = [
             orchestrator.multimodal,
             orchestrator.intent,
@@ -195,12 +200,25 @@ def create_app() -> FastAPI:
         return {"agents": listed, "count": len(listed)}
 
     @app.post("/api/chat")
-    def chat(req: ChatRequest, _: None = Depends(_require_api_auth)) -> JSONResponse:
+    def chat(req: ChatRequest, principal: User = Depends(_require_api_auth)) -> JSONResponse:
+        # Identity rule: non-admin principals are always scoped to their own user_id.
+        if principal.role is Role.ADMIN:
+            effective_user_id = req.user_id or principal.user_id
+        else:
+            if req.user_id and req.user_id != principal.user_id:
+                raise HTTPException(
+                    status_code=http_status.HTTP_403_FORBIDDEN,
+                    detail="forbidden for requested user_id",
+                )
+            effective_user_id = principal.user_id
+        metadata = dict(req.metadata)
+        metadata["principal_user_id"] = principal.user_id
+        metadata["principal_role"] = principal.role.value
         request = UserRequest(
-            user_id=req.user_id,
+            user_id=effective_user_id,
             text=req.text,
             modality=req.modality,
-            metadata=req.metadata,
+            metadata=metadata,
             attachments=req.attachments,
         )
         response = orchestrator.run(request)
@@ -209,20 +227,51 @@ def create_app() -> FastAPI:
     @app.get("/api/memory")
     def memory(
         kind: str | None = None,
-        user_id: str = "default",
+        user_id: str | None = None,
         limit: int = 20,
-        _: None = Depends(_require_api_auth),
+        principal: User = Depends(_require_api_auth),
     ) -> dict[str, Any]:
+        if principal.role is Role.ADMIN:
+            effective_user_id = user_id or principal.user_id
+        else:
+            if user_id and user_id != principal.user_id:
+                raise HTTPException(
+                    status_code=http_status.HTTP_403_FORBIDDEN,
+                    detail="forbidden for requested user_id",
+                )
+            effective_user_id = principal.user_id
         mem_kind = MemoryKind(kind) if kind else None
-        records = services.memory.recent(mem_kind, user_id=user_id, limit=limit)
-        return {"records": [r.to_dict() for r in records], "stats": services.memory.stats(user_id=user_id)}
+        records = services.memory.recent(mem_kind, user_id=effective_user_id, limit=limit)
+        return {
+            "records": [r.to_dict() for r in records],
+            "stats": services.memory.stats(user_id=effective_user_id),
+        }
 
     @app.get("/api/audit")
-    def audit(limit: int = 50, _: None = Depends(_require_api_auth)) -> dict[str, Any]:
-        return {"entries": services.audit.tail(limit)}
+    def audit(
+        limit: int = 50,
+        user_id: str | None = None,
+        principal: User = Depends(_require_api_auth),
+    ) -> dict[str, Any]:
+        if principal.role is Role.ADMIN:
+            effective_user_id = user_id or principal.user_id
+        else:
+            if user_id and user_id != principal.user_id:
+                raise HTTPException(
+                    status_code=http_status.HTTP_403_FORBIDDEN,
+                    detail="forbidden for requested user_id",
+                )
+            effective_user_id = principal.user_id
+        scoped = []
+        for entry in services.audit.tail(limit):
+            details = entry.get("details") if isinstance(entry, dict) else None
+            entry_user_id = details.get("user_id") if isinstance(details, dict) else None
+            if entry_user_id == effective_user_id:
+                scoped.append(entry)
+        return {"entries": scoped}
 
     @app.get("/api/channels")
-    def channels(_: None = Depends(_require_api_auth)) -> dict[str, Any]:
+    def channels(_: User = Depends(_require_api_auth)) -> dict[str, Any]:
         return {
             "telegram": {
                 "enabled": telegram.enabled,
@@ -233,7 +282,7 @@ def create_app() -> FastAPI:
 
     # -- Telegram webhook (alternative to polling) ------------------------- #
     @app.post("/webhooks/telegram")
-    async def telegram_webhook(request: Request, _: None = Depends(_require_api_auth)) -> dict[str, Any]:
+    async def telegram_webhook(request: Request, _: User = Depends(_require_api_auth)) -> dict[str, Any]:
         update = await request.json()
         telegram.handle_update(update)
         return {"ok": True}
@@ -252,7 +301,7 @@ def create_app() -> FastAPI:
         return PlainTextResponse("forbidden", status_code=403)
 
     @app.post("/webhooks/whatsapp")
-    async def whatsapp_webhook(request: Request, _: None = Depends(_require_api_auth)) -> dict[str, Any]:
+    async def whatsapp_webhook(request: Request, _: User = Depends(_require_api_auth)) -> dict[str, Any]:
         raw = await request.body()
         if settings.whatsapp_app_secret:
             signature = request.headers.get("X-Hub-Signature-256")
