@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import time
 from contextlib import asynccontextmanager
 from collections import defaultdict, deque
 from pathlib import Path
 import uuid
-from typing import Any
+from typing import Any, Iterator
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status as http_status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -40,6 +41,12 @@ class ChatRequest(BaseModel):
     modality: Modality = Modality.TEXT
     metadata: dict[str, Any] = Field(default_factory=dict)
     attachments: list[dict[str, Any]] = Field(default_factory=list)
+
+
+DEFAULT_PAGE_LIMIT = 20
+MAX_PAGE_LIMIT = 100
+MAX_OFFSET = 1000
+MAX_AUDIT_SCAN = 2000
 
 
 class BodySizeLimitMiddleware:
@@ -126,6 +133,61 @@ def create_app() -> FastAPI:
             return session.principal
         raise HTTPException(status_code=http_status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
 
+    def _resolve_effective_user_id(principal: User, requested_user_id: str | None) -> str:
+        if principal.role is Role.ADMIN:
+            return requested_user_id or principal.user_id
+        if requested_user_id and requested_user_id != principal.user_id:
+            raise HTTPException(
+                status_code=http_status.HTTP_403_FORBIDDEN,
+                detail="forbidden for requested user_id",
+            )
+        return principal.user_id
+
+    def _normalize_pagination(limit: int, offset: int) -> tuple[int, int]:
+        safe_limit = max(1, min(limit, MAX_PAGE_LIMIT))
+        safe_offset = max(0, min(offset, MAX_OFFSET))
+        return safe_limit, safe_offset
+
+    def _build_chat_request(req: ChatRequest, principal: User) -> UserRequest:
+        effective_user_id = _resolve_effective_user_id(principal, req.user_id)
+        metadata = dict(req.metadata)
+        metadata["principal_user_id"] = principal.user_id
+        metadata["principal_role"] = principal.role.value
+        return UserRequest(
+            user_id=effective_user_id,
+            text=req.text,
+            modality=req.modality,
+            metadata=metadata,
+            attachments=req.attachments,
+        )
+
+    def _sse_event(event: str, payload: dict[str, Any]) -> str:
+        return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    def _answer_chunks(answer: str, chunk_size: int = 80) -> Iterator[str]:
+        text = answer or ""
+        if not text:
+            yield ""
+            return
+        for i in range(0, len(text), chunk_size):
+            yield text[i:i + chunk_size]
+
+    def _history_turn(record: dict[str, Any]) -> dict[str, Any]:
+        content = str(record.get("content") or "")
+        user_text = content
+        assistant_text = ""
+        if content.startswith("User: ") and "\nACTA:" in content:
+            user_part, assistant_part = content.split("\nACTA:", 1)
+            user_text = user_part.removeprefix("User: ").strip()
+            assistant_text = assistant_part.strip()
+        return {
+            "id": record.get("id"),
+            "request_id": (record.get("metadata") or {}).get("request_id"),
+            "user_text": user_text,
+            "assistant_text": assistant_text,
+            "created_at": record.get("created_at"),
+        }
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         observability.init_sentry()
@@ -196,6 +258,7 @@ def create_app() -> FastAPI:
         return response
 
     # -- API routes -------------------------------------------------------- #
+    @app.get("/api/v1/health")
     @app.get("/api/health")
     def health() -> dict[str, Any]:
         return {"status": "ok", "app": settings.app_name, "version": app.version}
@@ -206,6 +269,7 @@ def create_app() -> FastAPI:
         status_code, payload, content_type = observability.metrics_payload()
         return PlainTextResponse(payload.decode("utf-8"), status_code=status_code, media_type=content_type)
 
+    @app.get("/api/v1/ready")
     @app.get("/api/ready")
     def ready() -> JSONResponse:
         checks: dict[str, bool] = {}
@@ -230,6 +294,9 @@ def create_app() -> FastAPI:
             status_code=status_code,
         )
 
+    # API maturity: `/api/v1/*` is the canonical surface; `/api/*` stays as a
+    # backward-compatible alias for existing clients/tests.
+    @app.get("/api/v1/status")
     @app.get("/api/status")
     def status(_: User = Depends(_require_api_auth)) -> dict[str, Any]:
         return {
@@ -240,6 +307,7 @@ def create_app() -> FastAPI:
             "connectors": services.connectors.names(),
         }
 
+    @app.get("/api/v1/agents")
     @app.get("/api/agents")
     def agents(_: User = Depends(_require_api_auth)) -> dict[str, Any]:
         core = [
@@ -270,77 +338,142 @@ def create_app() -> FastAPI:
             )
         return {"agents": listed, "count": len(listed)}
 
+    @app.post("/api/v1/chat")
     @app.post("/api/chat")
     def chat(req: ChatRequest, principal: User = Depends(_require_api_auth)) -> JSONResponse:
-        # Identity rule: non-admin principals are always scoped to their own user_id.
-        if principal.role is Role.ADMIN:
-            effective_user_id = req.user_id or principal.user_id
-        else:
-            if req.user_id and req.user_id != principal.user_id:
-                raise HTTPException(
-                    status_code=http_status.HTTP_403_FORBIDDEN,
-                    detail="forbidden for requested user_id",
-                )
-            effective_user_id = principal.user_id
-        metadata = dict(req.metadata)
-        metadata["principal_user_id"] = principal.user_id
-        metadata["principal_role"] = principal.role.value
-        request = UserRequest(
-            user_id=effective_user_id,
-            text=req.text,
-            modality=req.modality,
-            metadata=metadata,
-            attachments=req.attachments,
-        )
+        request = _build_chat_request(req, principal)
         response = orchestrator.run(request)
         return JSONResponse(response.model_dump())
 
+    @app.post("/api/v1/chat/stream")
+    @app.post("/api/chat/stream")
+    def stream_chat_post(req: ChatRequest, principal: User = Depends(_require_api_auth)) -> StreamingResponse:
+        request = _build_chat_request(req, principal)
+
+        def event_stream() -> Iterator[str]:
+            yield _sse_event("meta", {"request_id": request.request_id, "version": "v1"})
+            response = orchestrator.run(request)
+            for trace_entry in response.trace:
+                yield _sse_event("trace", trace_entry.model_dump())
+            for chunk in _answer_chunks(response.answer):
+                yield _sse_event("answer_delta", {"delta": chunk})
+            yield _sse_event("complete", response.model_dump())
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+
+    @app.get("/api/v1/chat/stream")
+    @app.get("/api/chat/stream")
+    def stream_chat_get(
+        text: str,
+        user_id: str | None = None,
+        language: str | None = None,
+        principal: User = Depends(_require_api_auth),
+    ) -> StreamingResponse:
+        req = ChatRequest(text=text, user_id=user_id, metadata={"language": language} if language else {})
+        return stream_chat_post(req, principal)
+
+    @app.get("/api/v1/memory")
     @app.get("/api/memory")
     def memory(
         kind: str | None = None,
         user_id: str | None = None,
         limit: int = 20,
+        offset: int = 0,
         principal: User = Depends(_require_api_auth),
     ) -> dict[str, Any]:
-        if principal.role is Role.ADMIN:
-            effective_user_id = user_id or principal.user_id
-        else:
-            if user_id and user_id != principal.user_id:
-                raise HTTPException(
-                    status_code=http_status.HTTP_403_FORBIDDEN,
-                    detail="forbidden for requested user_id",
-                )
-            effective_user_id = principal.user_id
+        effective_user_id = _resolve_effective_user_id(principal, user_id)
+        limit, offset = _normalize_pagination(limit, offset)
         mem_kind = MemoryKind(kind) if kind else None
-        records = services.memory.recent(mem_kind, user_id=effective_user_id, limit=limit)
+        scan_limit = min(limit + offset, MAX_OFFSET + MAX_PAGE_LIMIT)
+        records = services.memory.recent(mem_kind, user_id=effective_user_id, limit=scan_limit)
+        paged_records = records[offset:offset + limit]
+        stats = services.memory.stats(user_id=effective_user_id)
+        total = stats.get(mem_kind.value, 0) if mem_kind else sum(stats.values())
         return {
-            "records": [r.to_dict() for r in records],
-            "stats": services.memory.stats(user_id=effective_user_id),
+            "records": [r.to_dict() for r in paged_records],
+            "stats": stats,
+            "limit": limit,
+            "offset": offset,
+            "total": total,
+            "has_more": offset + len(paged_records) < total,
+            "pagination": {
+                "limit": limit,
+                "offset": offset,
+                "returned": len(paged_records),
+                "total": total,
+                "has_more": offset + len(paged_records) < total,
+            },
         }
 
+    @app.get("/api/v1/audit")
     @app.get("/api/audit")
     def audit(
         limit: int = 50,
+        offset: int = 0,
         user_id: str | None = None,
         principal: User = Depends(_require_api_auth),
     ) -> dict[str, Any]:
-        if principal.role is Role.ADMIN:
-            effective_user_id = user_id or principal.user_id
-        else:
-            if user_id and user_id != principal.user_id:
-                raise HTTPException(
-                    status_code=http_status.HTTP_403_FORBIDDEN,
-                    detail="forbidden for requested user_id",
-                )
-            effective_user_id = principal.user_id
+        effective_user_id = _resolve_effective_user_id(principal, user_id)
+        limit, offset = _normalize_pagination(limit, offset)
+        scan_limit = min(limit + offset, MAX_AUDIT_SCAN)
         scoped = []
-        for entry in services.audit.tail(limit):
+        for entry in services.audit.tail(scan_limit):
             details = entry.get("details") if isinstance(entry, dict) else None
             entry_user_id = details.get("user_id") if isinstance(details, dict) else None
             if entry_user_id == effective_user_id:
                 scoped.append(entry)
-        return {"entries": scoped}
+        paged_entries = scoped[offset:offset + limit]
+        total = len(scoped)
+        return {
+            "entries": paged_entries,
+            "limit": limit,
+            "offset": offset,
+            "total": total,
+            "has_more": offset + len(paged_entries) < total,
+            "pagination": {
+                "limit": limit,
+                "offset": offset,
+                "returned": len(paged_entries),
+                "total": total,
+                "has_more": offset + len(paged_entries) < total,
+            },
+        }
 
+    @app.get("/api/v1/history")
+    @app.get("/api/history")
+    def history(
+        user_id: str | None = None,
+        limit: int = DEFAULT_PAGE_LIMIT,
+        offset: int = 0,
+        principal: User = Depends(_require_api_auth),
+    ) -> dict[str, Any]:
+        effective_user_id = _resolve_effective_user_id(principal, user_id)
+        limit, offset = _normalize_pagination(limit, offset)
+        scan_limit = min(limit + offset, MAX_OFFSET + MAX_PAGE_LIMIT)
+        records = services.memory.recent(MemoryKind.EPISODIC, user_id=effective_user_id, limit=scan_limit)
+        turns = [_history_turn(record.to_dict()) for record in records]
+        paged_turns = turns[offset:offset + limit]
+        total = services.memory.stats(user_id=effective_user_id).get(MemoryKind.EPISODIC.value, 0)
+        return {
+            "items": paged_turns,
+            "limit": limit,
+            "offset": offset,
+            "total": total,
+            "has_more": offset + len(paged_turns) < total,
+            "pagination": {
+                "limit": limit,
+                "offset": offset,
+                "returned": len(paged_turns),
+                "total": total,
+                "has_more": offset + len(paged_turns) < total,
+            },
+        }
+
+    @app.get("/api/v1/channels")
     @app.get("/api/channels")
     def channels(_: User = Depends(_require_api_auth)) -> dict[str, Any]:
         return {

@@ -29,7 +29,7 @@ from acta.agents import (
 from acta.agents.specialized import WORKER_AGENTS, WorkerAgent
 from acta.logging_config import get_logger
 from acta.orchestrator.state import PipelineState
-from acta.schemas import ActaResponse, AgentResult, PlanTask, TaskStatus, UserRequest
+from acta.schemas import ActaResponse, AgentResult, IntentType, PlanTask, TaskStatus, UserRequest
 
 log = get_logger("orchestrator")
 
@@ -74,6 +74,24 @@ class Orchestrator:
         # 2) Multimodal: normalize inputs to text.
         step = self._step(step, self.multimodal.run, state, runner=self.multimodal.normalize)
 
+        # PERF-6 / ROADMAP P1#14: short-circuit trivial greetings.
+        if self._is_small_talk_fast_path(state):
+            step += 1
+            intent_result = AgentResult(agent="intent").done()
+            intent_result.summary = "small-talk fast path"
+            intent_result.output = {"intent": IntentType.SMALL_TALK.value}
+            state.intent.type = IntentType.SMALL_TALK
+            state.intent.summary = "trivial greeting"
+            state.intent.confidence = 1.0
+            state.answer = self._small_talk_answer(state.language)
+            state.add_trace(step, intent_result)
+
+            # Keep post-processing and observability wrappers active.
+            step = self._step(step, self.memory.run, state, runner=self.memory.persist)
+            step = self._step(step, self.multimodal.run, state, runner=self.multimodal.render)
+            self.s.audit.record("orchestrator", "request_complete", request_id=request.request_id)
+            return state.to_response()
+
         # 3) Intent Agent.
         step = self._step(step, self.intent.run, state)
 
@@ -117,6 +135,37 @@ class Orchestrator:
 
         self.s.audit.record("orchestrator", "request_complete", request_id=request.request_id)
         return state.to_response()
+
+    def _is_small_talk_fast_path(self, state: PipelineState) -> bool:
+        text = (state.normalized.get("text") or state.request.text or "").strip().lower()
+        if not text or len(text) > 32:
+            return False
+        normalized = "".join(ch for ch in text if ch.isalnum() or ch.isspace()).strip()
+        if not normalized:
+            return False
+        greetings = {
+            "hi",
+            "hello",
+            "hey",
+            "yo",
+            "sup",
+            "привет",
+            "здравствуй",
+            "здравствуйте",
+            "хай",
+            "shalom",
+            "שלום",
+            "היי",
+            "הי",
+        }
+        return normalized in greetings
+
+    def _small_talk_answer(self, lang: str) -> str:
+        if lang == "ru":
+            return "Привет! Я на связи. Чем могу помочь?"
+        if lang == "he":
+            return "היי! אני כאן. איך אפשר לעזור?"
+        return "Hey! I'm here and ready to help."
 
     # ------------------------------------------------------------------ #
     def _step(self, step: int, run_fn, state: PipelineState, runner=None) -> int:

@@ -114,3 +114,21 @@ def test_api_ready_endpoint_is_optional(monkeypatch):
         assert isinstance(response.json(), dict)
     else:
         pytest.skip("`/api/ready` is not implemented in this branch")
+
+
+def test_api_v1_aliases_and_stream(monkeypatch):
+    _configure_env(monkeypatch, ACTA_DEFAULT_PROVIDER="mock")
+    with TestClient(create_app()) as client:
+        assert client.get("/api/v1/health").status_code == 200
+        assert client.get("/api/v1/ready").status_code in {200, 503}
+        assert client.get("/api/v1/status").status_code == 200
+        assert client.get("/api/v1/agents").status_code == 200
+        assert client.post("/api/v1/chat", json={"text": "hello from v1"}).status_code == 200
+        assert client.get("/api/v1/channels").status_code == 200
+
+        with client.stream("POST", "/api/chat/stream", json={"text": "hello stream"}) as response:
+            assert response.status_code == 200
+            body = "".join(response.iter_text())
+        assert "event: meta" in body
+        assert "event: trace" in body
+        assert "event: complete" in body

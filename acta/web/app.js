@@ -55,6 +55,72 @@ function escapeHtml(s) {
   return (s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 }
 
+function parseSseBlock(block) {
+  const lines = block.split("\n");
+  let event = "message";
+  const dataLines = [];
+  for (const line of lines) {
+    if (line.startsWith("event:")) {
+      event = line.slice(6).trim();
+      continue;
+    }
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+  if (!dataLines.length) return null;
+  try {
+    return { event, data: JSON.parse(dataLines.join("\n")) };
+  } catch (_err) {
+    return null;
+  }
+}
+
+async function requestChatFallback(text) {
+  const r = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, metadata: { language: currentLang } }),
+  });
+  return r.json();
+}
+
+async function requestChatStream(text, thinking) {
+  const r = await fetch("/api/chat/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, metadata: { language: currentLang } }),
+  });
+  if (!r.ok || !r.body) {
+    throw new Error(`stream unavailable: ${r.status}`);
+  }
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let answer = "";
+  let response = null;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() || "";
+    for (const raw of events) {
+      const parsed = parseSseBlock(raw.trim());
+      if (!parsed) continue;
+      if (parsed.event === "answer_delta") {
+        answer += String(parsed.data.delta || "");
+        thinking.innerHTML = `<p>${escapeHtml(answer)}</p>`;
+      } else if (parsed.event === "complete") {
+        response = parsed.data;
+      }
+    }
+  }
+  if (response) return response;
+  if (answer) return { answer, trace: [] };
+  throw new Error("empty stream response");
+}
+
 async function loadStatus() {
   try {
     const r = await fetch("/api/status");
@@ -150,12 +216,12 @@ form.addEventListener("submit", async (e) => {
   thinking.classList.add("thinking");
 
   try {
-    const r = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, metadata: { language: currentLang } }),
-    });
-    const resp = await r.json();
+    let resp;
+    try {
+      resp = await requestChatStream(text, thinking);
+    } catch (_streamErr) {
+      resp = await requestChatFallback(text);
+    }
     lastResponse = resp;
     thinking.classList.remove("thinking");
     thinking.innerHTML = "";
