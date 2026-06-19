@@ -1,10 +1,24 @@
 from acta.channels import ChannelHub, TelegramChannel, WhatsAppChannel
 from acta.channels.base import IncomingMessage
+from acta.schemas import Modality
 
 
 def test_hub_handles_message(orchestrator):
     hub = ChannelHub(orchestrator)
     msg = IncomingMessage(channel="telegram", sender_id="123", text="Привет, что ты умеешь?")
+    answer = hub.handle(msg)
+    assert isinstance(answer, str) and answer
+
+
+def test_hub_handles_attachment_without_text(orchestrator):
+    hub = ChannelHub(orchestrator)
+    msg = IncomingMessage(
+        channel="telegram",
+        sender_id="123",
+        text="",
+        modality=Modality.IMAGE,
+        attachments=[{"type": "image", "caption": "whiteboard"}],
+    )
     answer = hub.handle(msg)
     assert isinstance(answer, str) and answer
 
@@ -26,6 +40,23 @@ def test_telegram_parse_update(orchestrator):
     assert ch.parse_update({"update_id": 2}) is None
 
 
+def test_telegram_parse_voice_attachment(orchestrator):
+    ch = TelegramChannel(ChannelHub(orchestrator))
+    update = {
+        "update_id": 3,
+        "message": {
+            "chat": {"id": 555},
+            "caption": "voice note",
+            "voice": {"file_id": "v1", "mime_type": "audio/ogg", "duration": 2},
+            "from": {"username": "u"},
+        },
+    }
+    msg = ch.parse_update(update)
+    assert msg is not None
+    assert msg.modality == Modality.VOICE
+    assert msg.attachments and msg.attachments[0]["type"] == "voice"
+
+
 def test_whatsapp_verify_and_parse(orchestrator):
     ch = WhatsAppChannel(ChannelHub(orchestrator))
     ch.verify_token = "tok"
@@ -43,6 +74,38 @@ def test_whatsapp_verify_and_parse(orchestrator):
     assert len(msgs) == 1
     assert msgs[0].text == "שלום"
     assert msgs[0].channel == "whatsapp"
+
+
+def test_whatsapp_parse_image_attachment(orchestrator):
+    ch = WhatsAppChannel(ChannelHub(orchestrator))
+    payload = {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "value": {
+                            "messages": [
+                                {
+                                    "id": "wamid-vision-1",
+                                    "type": "image",
+                                    "from": "972500000000",
+                                    "image": {
+                                        "id": "img-1",
+                                        "caption": "Desk setup",
+                                        "mime_type": "image/jpeg",
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+    msgs = ch.parse_webhook(payload)
+    assert len(msgs) == 1
+    assert msgs[0].modality == Modality.IMAGE
+    assert msgs[0].attachments[0]["type"] == "image"
 
 
 def test_channels_disabled_without_tokens(orchestrator):

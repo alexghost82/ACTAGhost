@@ -23,6 +23,10 @@ dependencies = [
 openai = ["openai>=1.30"]
 anthropic = ["anthropic>=0.25"]
 gemini = ["google-generativeai>=0.5"]
+stt = ["faster-whisper>=1.0", "openai>=1.30", "openai-whisper>=20231117"]
+tts = ["piper-tts>=1.2"]
+vision = ["openai>=1.30", "google-generativeai>=0.5"]
+multimodal = ["faster-whisper>=1.0", "openai-whisper>=20231117", "piper-tts>=1.2"]
 # Production-grade backing stores (the MVP runs without them)
 postgres = ["psycopg[binary]>=3.1", "pgvector>=0.2"]
 neo4j = ["neo4j>=5.18"]

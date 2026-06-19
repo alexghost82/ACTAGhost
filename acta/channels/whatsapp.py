@@ -16,6 +16,7 @@ import httpx
 from acta.channels.base import ChannelHub, IncomingMessage, RecentEventDeduper
 from acta.config import Settings, get_settings
 from acta.logging_config import get_logger
+from acta.schemas import Modality
 
 log = get_logger("channels.whatsapp")
 _GRAPH = "https://graph.facebook.com/v20.0"
@@ -51,17 +52,47 @@ class WhatsAppChannel:
             for change in entry.get("changes", []):
                 value = change.get("value", {})
                 for message in value.get("messages", []):
-                    if message.get("type") != "text":
-                        continue
                     sender = message.get("from")
+                    msg_type = message.get("type")
                     text = message.get("text", {}).get("body", "")
                     message_id = message.get("id")
-                    if sender and text:
+                    attachments: list[dict[str, Any]] = []
+                    modality = Modality.TEXT
+                    if msg_type == "image":
+                        image = message.get("image", {})
+                        attachments.append(
+                            {
+                                "type": "image",
+                                "platform": "whatsapp",
+                                "media_id": image.get("id"),
+                                "mime_type": image.get("mime_type"),
+                                "caption": image.get("caption"),
+                                "url": image.get("link"),
+                            }
+                        )
+                        text = text or image.get("caption", "")
+                        modality = Modality.IMAGE
+                    elif msg_type in {"audio", "voice"}:
+                        audio = message.get("audio", {})
+                        attachments.append(
+                            {
+                                "type": "audio",
+                                "platform": "whatsapp",
+                                "media_id": audio.get("id"),
+                                "mime_type": audio.get("mime_type"),
+                                "url": audio.get("link"),
+                            }
+                        )
+                        modality = Modality.VOICE
+
+                    if sender and (text or attachments):
                         out.append(
                             IncomingMessage(
                                 channel="whatsapp",
                                 sender_id=sender,
                                 text=text,
+                                modality=modality,
+                                attachments=attachments,
                                 metadata={"message_id": message_id},
                             )
                         )

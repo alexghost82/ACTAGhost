@@ -8,7 +8,7 @@ from typing import Any
 
 from acta.logging_config import get_logger
 from acta.orchestrator import Orchestrator
-from acta.schemas import UserRequest
+from acta.schemas import Modality, UserRequest
 
 log = get_logger("channels")
 
@@ -38,6 +38,8 @@ class IncomingMessage:
     channel: str  # "telegram" | "whatsapp" | ...
     sender_id: str  # chat id / phone number
     text: str
+    modality: Modality = Modality.TEXT
+    attachments: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -54,11 +56,13 @@ class ChannelHub:
 
     def handle(self, msg: IncomingMessage) -> str:
         """Process one inbound message and return the answer text."""
-        if not msg.text.strip():
+        if not msg.text.strip() and not msg.attachments:
             return ""
         request = UserRequest(
             user_id=msg.user_id,
             text=msg.text,
+            modality=msg.modality,
+            attachments=msg.attachments,
             metadata={
                 "channel": msg.channel,
                 "principal_user_id": msg.user_id,
