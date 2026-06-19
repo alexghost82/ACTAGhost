@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import threading
+import time
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, status as http_status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -30,6 +33,58 @@ class ChatRequest(BaseModel):
     attachments: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class BodySizeLimitMiddleware:
+    """Reject oversized request bodies before heavy processing (SEC-9)."""
+
+    def __init__(self, app: Any, max_body_size: int) -> None:
+        self.app = app
+        self.max_body_size = max_body_size
+
+    async def __call__(self, scope, receive, send):  # type: ignore[no-untyped-def]
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        content_length = headers.get("content-length")
+        if content_length and int(content_length) > self.max_body_size:
+            response = JSONResponse({"detail": "request body too large"}, status_code=413)
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+class InMemoryRateLimitMiddleware:
+    """Simple in-memory rate limiter for /api and /webhooks paths (SEC-9)."""
+
+    def __init__(self, app: Any, per_minute: int) -> None:
+        self.app = app
+        self.per_minute = max(0, per_minute)
+        self.hits: dict[str, deque[float]] = defaultdict(deque)
+
+    async def __call__(self, scope, receive, send):  # type: ignore[no-untyped-def]
+        if scope.get("type") != "http" or self.per_minute <= 0:
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+        if not (path.startswith("/api/") or path.startswith("/webhooks/")):
+            await self.app(scope, receive, send)
+            return
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        client = scope.get("client")
+        ip = client[0] if client else "unknown"
+        key = f"{ip}:{headers.get('x-api-key', '')}:{path}"
+        now = time.time()
+        bucket = self.hits[key]
+        while bucket and now - bucket[0] > 60:
+            bucket.popleft()
+        if len(bucket) >= self.per_minute:
+            response = JSONResponse({"detail": "rate limit exceeded"}, status_code=429)
+            await response(scope, receive, send)
+            return
+        bucket.append(now)
+        await self.app(scope, receive, send)
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(settings.log_level)
@@ -51,9 +106,33 @@ def create_app() -> FastAPI:
     app.state.hub = hub
     app.state.telegram = telegram
     app.state.whatsapp = whatsapp
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.api_cors_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Hub-Signature-256"],
+    )
+    app.add_middleware(BodySizeLimitMiddleware, max_body_size=settings.api_max_body_size_bytes)
+    app.add_middleware(InMemoryRateLimitMiddleware, per_minute=settings.api_rate_limit_per_minute)
+
+    def _require_api_auth(request: Request) -> None:
+        token = settings.api_auth_token
+        if not token:
+            return
+        auth = request.headers.get("Authorization", "")
+        api_key = request.headers.get("X-API-Key")
+        bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else None
+        if bearer == token or api_key == token:
+            return
+        raise HTTPException(status_code=http_status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
 
     @app.on_event("startup")
     def _start_channels() -> None:
+        if not settings.api_auth_token:
+            log.warning("SEC-1/SEC-4: API authentication token is not configured; API remains unauthenticated")
+        if not settings.whatsapp_app_secret:
+            log.warning("SEC-3: WhatsApp app secret is not configured; webhook signature checks are disabled")
         # In long-poll mode (no webhook URL), run the Telegram poller in a thread.
         if telegram.enabled and not settings.telegram_webhook_url:
             t = threading.Thread(target=telegram.poll_forever, daemon=True, name="tg-poller")
@@ -66,7 +145,7 @@ def create_app() -> FastAPI:
         return {"status": "ok", "app": settings.app_name, "version": app.version}
 
     @app.get("/api/status")
-    def status() -> dict[str, Any]:
+    def status(_: None = Depends(_require_api_auth)) -> dict[str, Any]:
         return {
             "providers": services.router.available_providers(),
             "default_provider": settings.default_provider,
@@ -76,7 +155,7 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/api/agents")
-    def agents() -> dict[str, Any]:
+    def agents(_: None = Depends(_require_api_auth)) -> dict[str, Any]:
         core = [
             orchestrator.multimodal,
             orchestrator.intent,
@@ -106,7 +185,7 @@ def create_app() -> FastAPI:
         return {"agents": listed, "count": len(listed)}
 
     @app.post("/api/chat")
-    def chat(req: ChatRequest) -> JSONResponse:
+    def chat(req: ChatRequest, _: None = Depends(_require_api_auth)) -> JSONResponse:
         request = UserRequest(
             user_id=req.user_id,
             text=req.text,
@@ -118,17 +197,22 @@ def create_app() -> FastAPI:
         return JSONResponse(response.model_dump())
 
     @app.get("/api/memory")
-    def memory(kind: str | None = None, user_id: str = "default", limit: int = 20) -> dict[str, Any]:
+    def memory(
+        kind: str | None = None,
+        user_id: str = "default",
+        limit: int = 20,
+        _: None = Depends(_require_api_auth),
+    ) -> dict[str, Any]:
         mem_kind = MemoryKind(kind) if kind else None
         records = services.memory.recent(mem_kind, user_id=user_id, limit=limit)
         return {"records": [r.to_dict() for r in records], "stats": services.memory.stats(user_id=user_id)}
 
     @app.get("/api/audit")
-    def audit(limit: int = 50) -> dict[str, Any]:
+    def audit(limit: int = 50, _: None = Depends(_require_api_auth)) -> dict[str, Any]:
         return {"entries": services.audit.tail(limit)}
 
     @app.get("/api/channels")
-    def channels() -> dict[str, Any]:
+    def channels(_: None = Depends(_require_api_auth)) -> dict[str, Any]:
         return {
             "telegram": {
                 "enabled": telegram.enabled,
@@ -139,7 +223,7 @@ def create_app() -> FastAPI:
 
     # -- Telegram webhook (alternative to polling) ------------------------- #
     @app.post("/webhooks/telegram")
-    async def telegram_webhook(request: Request) -> dict[str, Any]:
+    async def telegram_webhook(request: Request, _: None = Depends(_require_api_auth)) -> dict[str, Any]:
         update = await request.json()
         telegram.handle_update(update)
         return {"ok": True}
@@ -158,7 +242,12 @@ def create_app() -> FastAPI:
         return PlainTextResponse("forbidden", status_code=403)
 
     @app.post("/webhooks/whatsapp")
-    async def whatsapp_webhook(request: Request) -> dict[str, Any]:
+    async def whatsapp_webhook(request: Request, _: None = Depends(_require_api_auth)) -> dict[str, Any]:
+        raw = await request.body()
+        if settings.whatsapp_app_secret:
+            signature = request.headers.get("X-Hub-Signature-256")
+            if not whatsapp.verify_signature(raw, signature):
+                return JSONResponse({"detail": "invalid webhook signature"}, status_code=403)
         payload = await request.json()
         count = whatsapp.handle_webhook(payload)
         return {"ok": True, "processed": count}

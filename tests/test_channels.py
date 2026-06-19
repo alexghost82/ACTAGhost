@@ -48,3 +48,22 @@ def test_whatsapp_verify_and_parse(orchestrator):
 def test_channels_disabled_without_tokens(orchestrator):
     assert TelegramChannel(ChannelHub(orchestrator)).enabled is False
     assert WhatsAppChannel(ChannelHub(orchestrator)).enabled is False
+
+
+def test_telegram_allowlist_blocks_unknown_sender(orchestrator, services):
+    services.settings.telegram_allowed_chat_ids = ["111"]
+    ch = TelegramChannel(ChannelHub(orchestrator), services.settings)
+    msg = ch.parse_update(
+        {
+            "update_id": 1,
+            "message": {"chat": {"id": 222}, "text": "hello", "from": {"username": "u"}},
+        }
+    )
+    assert msg is not None
+    assert ch._is_sender_allowed(msg.sender_id) is False
+
+
+def test_whatsapp_allowlist_blocks_unknown_sender(orchestrator, services):
+    services.settings.whatsapp_allowed_numbers = ["972511111111"]
+    ch = WhatsAppChannel(ChannelHub(orchestrator), services.settings)
+    assert ch._is_sender_allowed("972500000000") is False

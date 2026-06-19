@@ -50,6 +50,9 @@ class PermissionRegistry:
     def grant(self, agent: str, capability: str) -> None:
         self._grants.setdefault(agent, set()).add(capability)
 
+    def revoke(self, agent: str, capability: str) -> None:
+        self._grants.setdefault(agent, set()).discard(capability)
+
     def has(self, agent: str, capability: str) -> bool:
         return capability in self._grants.get(agent, set())
 

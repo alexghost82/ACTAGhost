@@ -46,14 +46,20 @@ class Crypto:
         return base64.urlsafe_b64encode(kdf.derive(password.encode()))
 
     def _load_or_create_key(self) -> bytes:
-        key_path = s_dir(self.settings) / "fernet.key"
+        key_path = self._key_path()
         if key_path.exists():
             return key_path.read_bytes()
+        key_path.parent.mkdir(parents=True, exist_ok=True)
         key = Fernet.generate_key()
         key_path.write_bytes(key)
         _chmod_600(key_path)
         log.info("Generated new local encryption key at %s", key_path)
         return key
+
+    def _key_path(self):
+        if self.settings.fernet_key_path:
+            return self.settings.fernet_key_path.expanduser()
+        return s_dir(self.settings) / "fernet.key"
 
     # -- API --------------------------------------------------------------- #
     def encrypt(self, plaintext: str) -> str:

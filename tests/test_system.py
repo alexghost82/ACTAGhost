@@ -1,7 +1,13 @@
 from acta.integration.system import SystemConnector
 
 
+def _enable_system_control(services) -> None:
+    services.settings.allow_system_control = True
+    services.permissions.grant("system", "system.control")
+
+
 def test_system_info(services):
+    _enable_system_control(services)
     conn = SystemConnector(services.settings)
     out = conn.execute("info", {})
     assert out["ok"] is True
@@ -9,25 +15,28 @@ def test_system_info(services):
 
 
 def test_system_exec_echo(services):
+    _enable_system_control(services)
     conn = SystemConnector(services.settings)
-    out = conn.execute("exec", {"command": "echo acta-ok"})
+    out = conn.execute("exec", {"command": "echo acta-ok", "confirm": True})
     assert out["ok"] is True
     assert "acta-ok" in out["stdout"]
 
 
 def test_system_fs_lifecycle(services, tmp_path):
+    _enable_system_control(services)
     conn = SystemConnector(services.settings)
     target = tmp_path / "subdir" / "file.txt"
     w = conn.execute("fs", {"op": "write", "path": str(target), "content": "hello"})
     assert w["ok"] is True
     r = conn.execute("fs", {"op": "read", "path": str(target)})
     assert r["content"] == "hello"
-    d = conn.execute("fs", {"op": "delete", "path": str(target)})
+    d = conn.execute("fs", {"op": "delete", "path": str(target), "confirm": True})
     assert d["ok"] is True
     assert not target.exists()
 
 
 def test_system_processes(services):
+    _enable_system_control(services)
     conn = SystemConnector(services.settings)
     out = conn.execute("processes", {"limit": 5})
     assert out["ok"] is True
@@ -40,10 +49,11 @@ def test_system_control_can_be_disabled(services):
     out = conn.execute("exec", {"command": "echo nope"})
     assert out["ok"] is False
     assert out.get("code") == "disabled"
-    services.settings.allow_system_control = True
+    _enable_system_control(services)
 
 
 def test_system_agent_routed_in_pipeline(orchestrator):
+    _enable_system_control(orchestrator.s)
     from acta.schemas import UserRequest
 
     resp = orchestrator.run(UserRequest(text="Покажи информацию о системе"))
@@ -52,3 +62,26 @@ def test_system_agent_routed_in_pipeline(orchestrator):
     assert system_tasks
     assert all(task.status.value == "done" for task in system_tasks)
     assert resp.answer
+
+
+def test_system_exec_requires_confirmation(services):
+    _enable_system_control(services)
+    conn = SystemConnector(services.settings)
+    out = conn.execute("exec", {"command": "echo no-confirm"})
+    assert out["ok"] is False
+    assert out["code"] == "confirmation_required"
+
+
+def test_system_exec_blocks_dangerous_env_overrides(services):
+    _enable_system_control(services)
+    conn = SystemConnector(services.settings)
+    out = conn.execute(
+        "exec",
+        {
+            "command": ["echo", "acta-env"],
+            "confirm": True,
+            "env": {"PATH": "/tmp/evil", "ACTA_SAMPLE_FLAG": "1"},
+        },
+    )
+    assert out["ok"] is True
+    assert "PATH" in out["blocked_env"]

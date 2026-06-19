@@ -114,6 +114,8 @@ class SystemAgent(WorkerAgent):
     )
 
     def execute_task(self, state, task: PlanTask) -> dict:
+        # SEC-8: real gate is both capability check and runtime setting.
+        # TODO(SEC-8,A2-identity): bind system.control to authenticated user context/roles.
         self.s.permissions.require(self.NAME, "system.control")
         if not self.s.settings.allow_system_control:
             return {
@@ -124,7 +126,7 @@ class SystemAgent(WorkerAgent):
             }
 
         action, params = self._resolve_action(state, task)
-        self.s.audit.record(self.NAME, "system_action", op=action, params=params)
+        self.s.audit.record(self.NAME, "system_action", op=action, params=self._redact_params(params))
         out = self.s.connectors.execute("system", action, params)
         ok = bool(out.get("ok", False))
         text = self._describe(action, params, out)
@@ -198,6 +200,8 @@ class SystemAgent(WorkerAgent):
 
     def _describe(self, action: str, params: dict, out: dict) -> str:
         if not out.get("ok"):
+            if out.get("code") == "confirmation_required":
+                return f"[system:{action}] требуется явное подтверждение (confirm=true)"
             return f"[system:{action}] ошибка: {out.get('error', out.get('stderr', 'unknown'))}"
         if action == "info":
             return (
@@ -215,6 +219,20 @@ class SystemAgent(WorkerAgent):
         if action == "fs":
             return f"fs {params.get('op')} -> {out.get('path') or out.get('deleted') or 'ok'}"
         return json.dumps(out, ensure_ascii=False)[:1000]
+
+    def _redact_params(self, params: dict) -> dict:
+        redacted: dict = {}
+        for key, value in params.items():
+            key_low = str(key).lower()
+            if key_low in {"command", "cmd", "path", "dest", "env"}:
+                redacted[key] = "<redacted>"
+                continue
+            text = str(value)
+            if len(text) > 256:
+                redacted[key] = f"<truncated:{len(text)} chars>"
+            else:
+                redacted[key] = value
+        return redacted
 
 
 WORKER_AGENTS: dict[str, type[WorkerAgent]] = {
