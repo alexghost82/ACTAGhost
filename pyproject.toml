@@ -27,6 +27,12 @@ gemini = ["google-generativeai>=0.5"]
 postgres = ["psycopg[binary]>=3.1", "pgvector>=0.2"]
 neo4j = ["neo4j>=5.18"]
 redis = ["redis>=5.0"]
+observability = [
+    "prometheus-client>=0.20",
+    "opentelemetry-api>=1.25",
+    "opentelemetry-sdk>=1.25",
+    "sentry-sdk>=2.8",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
