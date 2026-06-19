@@ -1,8 +1,28 @@
 # SECURITY_REPORT.md — ACTA
 
 > Аудит безопасности. Риск по шкале CVSS-подобной: Critical / High / Medium / Low.
-> Главный вывод: **ACTA предоставляет неаутентифицированное удалённое выполнение кода и полный контроль
-> над ОС по дизайну.** Это не баг реализации — это включено по умолчанию.
+> Главный вывод (исходный): **ACTA предоставляет неаутентифицированное удалённое выполнение кода и полный
+> контроль над ОС по дизайну.** Это не баг реализации — это включено по умолчанию.
+
+## Статус доработки (2026-06-19) — РИСКИ ЗАКРЫТЫ
+
+Все 🔴 Critical/High блокеры устранены потоками A1-security и A2-identity (см. ветки `feature/A1-security`,
+`feature/A2-identity`). Итог: API защищён токеном (Bearer/X-API-Key), системный контроль выключен по умолчанию
+(`allow_system_control=False`), `shell=True` убран, деструктивные действия требуют подтверждения, каналы — с
+allowlist, вебхук WhatsApp проверяет HMAC, `/api/memory` и `/api/audit` ограничены принципалом с ролями.
+
+| ID | Риск | Статус | Где закрыто |
+|---|---|---|---|
+| SEC-1 | Неаутентифицированный RCE | ✅ Закрыт | API auth + `allow_system_control=False` + confirm + role gate |
+| SEC-2 | Каналы без allowlist | ✅ Закрыт | allowlist `chat_id`/номеров; каналы → роль USER (без system.control) |
+| SEC-3 | Подпись вебхука WhatsApp | ✅ Закрыт | проверка `X-Hub-Signature-256` (HMAC) при заданном app secret |
+| SEC-4 | Утечка данных через API | ✅ Закрыт | auth + принципал-скоупинг `/api/memory`,`/api/audit` (non-admin → 403) |
+| SEC-5 | Command/env injection | ✅ Закрыт | `shlex.split`, без `shell=True`, whitelist env |
+| SEC-6 | Неогранич. файловые операции | ✅ Закрыт | confirm + sandbox-root для delete/move |
+| SEC-7 | Ключ рядом с БД | ◐ Частично | опц. `fernet_key_path` (вынос ключа); keychain/KMS — TODO |
+| SEC-8 | Декоративный PermissionRegistry | ✅ Закрыт | реальный ролевой гейт (ADMIN/USER) в `require()` |
+| SEC-9 | Нет rate limit / CORS / лимита тела | ✅ Закрыт | middleware: body-size, rate-limit, явный CORS |
+| SEC-10 | Лог чувствительных данных в аудит | ✅ Закрыт | редакция чувствительных `params` перед записью |
 
 ## Топ-риски
 
