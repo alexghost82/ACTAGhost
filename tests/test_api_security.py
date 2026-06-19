@@ -182,3 +182,57 @@ def test_body_size_limit_blocks_large_payload(monkeypatch):
         headers={"Content-Type": "application/json"},
     )
     assert resp.status_code == 413
+
+
+def test_configured_token_rejects_missing_auth_for_chat_and_channels(monkeypatch):
+    client = _client_with_env(
+        monkeypatch,
+        ACTA_DEFAULT_PROVIDER="mock",
+        ACTA_API_AUTH_TOKEN="secret-token",
+    )
+    assert client.post("/api/chat", json={"text": "hello"}).status_code == 401
+    assert client.get("/api/channels").status_code == 401
+
+
+def test_user_token_cannot_impersonate_other_user_via_chat(monkeypatch):
+    client = _client_with_env(
+        monkeypatch,
+        ACTA_DEFAULT_PROVIDER="mock",
+        ACTA_API_USERS="alice-token:alice:user,bob-token:bob:user",
+    )
+    as_alice = {"Authorization": "Bearer alice-token"}
+    own = client.post("/api/chat", json={"text": "hello"}, headers=as_alice)
+    assert own.status_code == 200
+    other = client.post("/api/chat", json={"text": "hello", "user_id": "bob"}, headers=as_alice)
+    assert other.status_code == 403
+
+
+def test_user_token_cannot_read_other_user_memory_or_audit(monkeypatch):
+    client = _client_with_env(
+        monkeypatch,
+        ACTA_DEFAULT_PROVIDER="mock",
+        ACTA_API_USERS="alice-token:alice:user,bob-token:bob:user",
+    )
+    as_alice = {"Authorization": "Bearer alice-token"}
+    assert client.get("/api/memory", params={"user_id": "bob"}, headers=as_alice).status_code == 403
+    assert client.get("/api/audit", params={"user_id": "bob"}, headers=as_alice).status_code == 403
+
+
+def test_whatsapp_webhook_rejects_missing_or_bad_signature(monkeypatch):
+    client = _client_with_env(
+        monkeypatch,
+        ACTA_DEFAULT_PROVIDER="mock",
+        ACTA_API_AUTH_TOKEN="secret-token",
+        ACTA_WHATSAPP_APP_SECRET="app-secret",
+    )
+    payload = {"entry": [{"changes": [{"value": {"messages": []}}]}]}
+    raw = json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json", "Authorization": "Bearer secret-token"}
+    missing = client.post("/webhooks/whatsapp", content=raw, headers=headers)
+    assert missing.status_code == 403
+    bad = client.post(
+        "/webhooks/whatsapp",
+        content=raw,
+        headers={**headers, "X-Hub-Signature-256": "sha256=deadbeef"},
+    )
+    assert bad.status_code == 403

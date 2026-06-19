@@ -217,6 +217,12 @@ class SystemConnector(Connector):
                     "error": f"destructive fs op outside sandbox root '{allowed_root}'",
                 }
 
+        if op == "list":
+            base = target or Path.cwd()
+            return {"ok": True, "path": str(base), "entries": sorted(e.name for e in base.iterdir())}
+        if target is None:
+            return {"ok": False, "error": "missing 'path'"}
+
         if op == "read":
             return {"ok": True, "content": target.read_text(encoding="utf-8", errors="replace")}
         if op in ("write", "create"):
@@ -244,9 +250,6 @@ class SystemConnector(Connector):
         if op == "mkdir":
             target.mkdir(parents=True, exist_ok=True)
             return {"ok": True, "path": str(target)}
-        if op == "list":
-            base = target or Path.cwd()
-            return {"ok": True, "path": str(base), "entries": sorted(e.name for e in base.iterdir())}
         return {"ok": False, "error": f"unknown fs op '{op}'"}
 
     # -- info -------------------------------------------------------------- #

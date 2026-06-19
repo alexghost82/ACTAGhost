@@ -45,7 +45,7 @@ class IntentAgent(BaseAgent):
         scores: dict[IntentType, int] = {}
         for itype, cues in _INTENT_CUES.items():
             scores[itype] = sum(1 for c in cues if c in lowered)
-        best_type = max(scores, key=scores.get)
+        best_type = max(scores, key=lambda intent_type: scores[intent_type])
         if scores[best_type] == 0:
             best_type = IntentType.SMALL_TALK if len(lowered) < 12 else IntentType.TASK
 

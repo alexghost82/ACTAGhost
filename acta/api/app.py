@@ -49,7 +49,7 @@ class BodySizeLimitMiddleware:
         self.app = app
         self.max_body_size = max_body_size
 
-    async def __call__(self, scope, receive, send):  # type: ignore[no-untyped-def]
+    async def __call__(self, scope, receive, send):
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
@@ -70,7 +70,7 @@ class InMemoryRateLimitMiddleware:
         self.per_minute = max(0, per_minute)
         self.hits: dict[str, deque[float]] = defaultdict(deque)
 
-    async def __call__(self, scope, receive, send):  # type: ignore[no-untyped-def]
+    async def __call__(self, scope, receive, send):
         if scope.get("type") != "http" or self.per_minute <= 0:
             await self.app(scope, receive, send)
             return
@@ -377,7 +377,8 @@ def create_app() -> FastAPI:
         if settings.whatsapp_app_secret:
             signature = request.headers.get("X-Hub-Signature-256")
             if not whatsapp.verify_signature(raw, signature):
-                return JSONResponse({"detail": "invalid webhook signature"}, status_code=403)
+                # Preserve explicit JSON 403 response for webhook callers.
+                return JSONResponse({"detail": "invalid webhook signature"}, status_code=403)  # type: ignore[return-value]
         payload = await request.json()
         count = whatsapp.handle_webhook(payload)
         return {"ok": True, "processed": count}
