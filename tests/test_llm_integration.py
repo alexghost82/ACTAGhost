@@ -40,6 +40,8 @@ def real_services(services):
     """Inject a fake real provider and make the router prefer it."""
     services.router._providers["fake"] = FakeProvider()
     services.router.settings.default_provider = "fake"
+    services.settings.allow_system_control = True
+    services.permissions.grant("system", "system.control")
     return services
 
 

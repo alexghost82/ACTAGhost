@@ -26,6 +26,9 @@ class TelegramChannel:
         self._base = f"https://api.telegram.org/bot{self.token}"
         self._offset = 0
         self._running = False
+        self._allowed_chat_ids = {str(x).strip() for x in self.settings.telegram_allowed_chat_ids if str(x).strip()}
+        if not self._allowed_chat_ids:
+            log.warning("Telegram sender allowlist is empty; all chat IDs are accepted")
 
     @property
     def enabled(self) -> bool:
@@ -62,8 +65,16 @@ class TelegramChannel:
         msg = self.parse_update(update)
         if msg is None:
             return
+        if not self._is_sender_allowed(msg.sender_id):
+            log.warning("Dropping telegram message from non-allowlisted sender: %s", msg.sender_id)
+            return
         answer = self.hub.handle(msg)
         self.send_message(msg.sender_id, answer)
+
+    def _is_sender_allowed(self, sender_id: str) -> bool:
+        if not self._allowed_chat_ids:
+            return True
+        return sender_id in self._allowed_chat_ids
 
     # -- long polling ------------------------------------------------------ #
     def poll_forever(self, interval: float = 1.0) -> None:

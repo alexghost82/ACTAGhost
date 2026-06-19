@@ -36,13 +36,17 @@ class AgentServices:
     def build(cls, settings: Settings | None = None) -> "AgentServices":
         settings = settings or get_settings()
         memory = MemoryStore(settings)
+        permissions = PermissionRegistry()
+        if not settings.allow_system_control:
+            for agent in ("system", "integration"):
+                permissions.revoke(agent, "system.control")
         return cls(
             settings=settings,
             router=AIRouter(settings),
             memory=memory,
             kg=KnowledgeGraph(settings),
             audit=AuditLog(settings),
-            permissions=PermissionRegistry(),
+            permissions=permissions,
             connectors=default_registry(settings),
             multimodal=MultimodalProcessor(),
         )

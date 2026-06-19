@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import platform
+import shlex
 import shutil
 import signal
 import subprocess
@@ -30,6 +31,9 @@ from acta.logging_config import get_logger
 log = get_logger("integration.system")
 
 _OS = platform.system()  # 'Darwin' | 'Linux' | 'Windows'
+_BLOCKED_ENV_KEYS = {"LD_PRELOAD", "LD_LIBRARY_PATH", "PATH", "PYTHONPATH", "PYTHONHOME"}
+_BLOCKED_ENV_PREFIXES = ("DYLD_", "LD_")
+_ALLOWED_ENV_KEYS = {"LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ", "NO_COLOR"}
 
 
 class SystemConnector(Connector):
@@ -42,6 +46,13 @@ class SystemConnector(Connector):
     def execute(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         if not self.settings.allow_system_control:
             return {"ok": False, "error": "system control disabled", "code": "disabled"}
+        if self._needs_confirmation(action, params):
+            return {
+                "ok": False,
+                "code": "confirmation_required",
+                "error": "explicit confirmation required",
+                "action": action,
+            }
         handler = {
             "exec": self._exec,
             "run": self._exec,
@@ -61,6 +72,17 @@ class SystemConnector(Connector):
             log.exception("system action %s failed", action)
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
+    def _needs_confirmation(self, action: str, params: dict[str, Any]) -> bool:
+        if bool(params.get("confirm")):
+            return False
+        if action in {"exec", "run", "kill"}:
+            return True
+        if action == "service" and params.get("op") in {"stop", "restart"}:
+            return True
+        if action == "fs" and params.get("op") in {"delete", "move"}:
+            return True
+        return False
+
     # -- commands ---------------------------------------------------------- #
     def _exec(self, p: dict[str, Any]) -> dict[str, Any]:
         command = p.get("command")
@@ -68,35 +90,39 @@ class SystemConnector(Connector):
             return {"ok": False, "error": "missing 'command'"}
         timeout = int(p.get("timeout", self.settings.system_exec_timeout))
         cwd = p.get("cwd")
+        argv = self._coerce_command(command)
+        env, blocked = self._safe_env(p.get("env"))
         proc = subprocess.run(
-            command,
-            shell=isinstance(command, str),
+            argv,
             cwd=cwd,
             capture_output=True,
             text=True,
             timeout=timeout,
-            env={**os.environ, **(p.get("env") or {})},
+            env=env,
         )
         return {
             "ok": proc.returncode == 0,
             "returncode": proc.returncode,
             "stdout": proc.stdout[-8000:],
             "stderr": proc.stderr[-4000:],
+            "blocked_env": blocked,
         }
 
     def _spawn(self, p: dict[str, Any]) -> dict[str, Any]:
         command = p.get("command")
         if not command:
             return {"ok": False, "error": "missing 'command'"}
+        argv = self._coerce_command(command)
+        env, blocked = self._safe_env(p.get("env"))
         popen = subprocess.Popen(
-            command,
-            shell=isinstance(command, str),
+            argv,
             cwd=p.get("cwd"),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
+            env=env,
         )
-        return {"ok": True, "pid": popen.pid, "detached": True}
+        return {"ok": True, "pid": popen.pid, "detached": True, "blocked_env": blocked}
 
     # -- processes --------------------------------------------------------- #
     def _processes(self, p: dict[str, Any]) -> dict[str, Any]:
@@ -182,6 +208,14 @@ class SystemConnector(Connector):
         if op != "list" and not path:
             return {"ok": False, "error": "missing 'path'"}
         target = Path(path).expanduser() if path else None
+        if op in {"delete", "move"} and target is not None and not bool(p.get("confirm")):
+            allowed_root = self._fs_root()
+            if allowed_root is not None and not self._is_within_root(target, allowed_root):
+                return {
+                    "ok": False,
+                    "code": "sandbox_denied",
+                    "error": f"destructive fs op outside sandbox root '{allowed_root}'",
+                }
 
         if op == "read":
             return {"ok": True, "content": target.read_text(encoding="utf-8", errors="replace")}
@@ -230,3 +264,42 @@ class SystemConnector(Connector):
             "cwd": os.getcwd(),
             "user": os.environ.get("USER") or os.environ.get("USERNAME"),
         }
+
+    def _coerce_command(self, command: Any) -> list[str]:
+        if isinstance(command, str):
+            parts = shlex.split(command)
+            if not parts:
+                raise ValueError("empty command")
+            return parts
+        if isinstance(command, list) and command:
+            return [str(item) for item in command]
+        raise ValueError("command must be a non-empty string or list")
+
+    def _safe_env(self, env_overrides: Any) -> tuple[dict[str, str], list[str]]:
+        merged = dict(os.environ)
+        blocked: list[str] = []
+        if not isinstance(env_overrides, dict):
+            return merged, blocked
+        for key, value in env_overrides.items():
+            if not isinstance(key, str):
+                continue
+            upper = key.upper()
+            if upper in _BLOCKED_ENV_KEYS or any(upper.startswith(prefix) for prefix in _BLOCKED_ENV_PREFIXES):
+                blocked.append(key)
+                continue
+            if upper.startswith("ACTA_") or upper in _ALLOWED_ENV_KEYS:
+                merged[key] = str(value)
+        return merged, blocked
+
+    def _fs_root(self) -> Path | None:
+        root = self.settings.system_fs_root or self.settings.data_dir
+        if not root:
+            return None
+        return Path(root).expanduser().resolve()
+
+    def _is_within_root(self, target: Path, root: Path) -> bool:
+        try:
+            target.resolve().relative_to(root)
+            return True
+        except ValueError:
+            return False

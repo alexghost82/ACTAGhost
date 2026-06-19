@@ -7,6 +7,8 @@ through the Cloud API graph endpoint. Configure with ``ACTA_WHATSAPP_TOKEN``,
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 from typing import Any
 
 import httpx
@@ -26,6 +28,10 @@ class WhatsAppChannel:
         self.token = self.settings.whatsapp_token
         self.phone_id = self.settings.whatsapp_phone_id
         self.verify_token = self.settings.whatsapp_verify_token
+        self.app_secret = self.settings.whatsapp_app_secret
+        self._allowed_numbers = {str(x).strip() for x in self.settings.whatsapp_allowed_numbers if str(x).strip()}
+        if not self._allowed_numbers:
+            log.warning("WhatsApp sender allowlist is empty; all numbers are accepted")
 
     @property
     def enabled(self) -> bool:
@@ -55,12 +61,33 @@ class WhatsAppChannel:
     def handle_webhook(self, payload: dict[str, Any]) -> int:
         messages = self.parse_webhook(payload)
         for msg in messages:
+            if not self._is_sender_allowed(msg.sender_id):
+                log.warning("Dropping whatsapp message from non-allowlisted sender: %s", msg.sender_id)
+                continue
             try:
                 answer = self.hub.handle(msg)
                 self.send_message(msg.sender_id, answer)
             except Exception:
                 log.exception("failed handling whatsapp message")
         return len(messages)
+
+    def verify_signature(self, raw_body: bytes, signature_header: str | None) -> bool:
+        if not self.app_secret:
+            return True
+        if not signature_header or not signature_header.startswith("sha256="):
+            return False
+        expected = hmac.new(
+            self.app_secret.encode("utf-8"),
+            raw_body,
+            hashlib.sha256,
+        ).hexdigest()
+        actual = signature_header.split("=", 1)[1].strip()
+        return hmac.compare_digest(expected, actual)
+
+    def _is_sender_allowed(self, sender_id: str) -> bool:
+        if not self._allowed_numbers:
+            return True
+        return sender_id in self._allowed_numbers
 
     # -- outbound ---------------------------------------------------------- #
     def send_message(self, to: str, text: str) -> dict[str, Any]:
