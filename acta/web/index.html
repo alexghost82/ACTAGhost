@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ACTA GHOST — Autonomous Cognitive Task Assistant</title>
+  <link rel="icon" type="image/png" href="/static/logo.png" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <img class="logo" src="/static/logo.png" alt="ACTA GHOST" />
+        <div>
+          <h1>ACTA <span class="ghost">GHOST</span></h1>
+          <p>Autonomous Cognitive Task Assistant</p>
+        </div>
+      </div>
+
+      <div class="lang-switch">
+        <button class="lang active" data-lang="ru">RUS</button>
+        <button class="lang" data-lang="he">עברית</button>
+        <button class="lang" data-lang="en">ENG</button>
+      </div>
+
+      <section class="panel">
+        <h2>Состояние системы</h2>
+        <div id="status" class="status-grid">
+          <div class="status-item"><span>Провайдеры</span><b id="st-providers">—</b></div>
+          <div class="status-item"><span>Память</span><b id="st-memory">—</b></div>
+          <div class="status-item"><span>Граф знаний</span><b id="st-kg">—</b></div>
+          <div class="status-item"><span>Коннекторы</span><b id="st-conn">—</b></div>
+        </div>
+      </section>
+
+      <section class="panel grow">
+        <h2>Агенты <span id="agent-count" class="pill"></span></h2>
+        <div id="agents" class="agent-list"></div>
+      </section>
+
+      <footer class="sidebar-foot">Локально · зашифровано · оффлайн-готово</footer>
+    </aside>
+
+    <main class="main">
+      <div id="messages" class="messages">
+        <div class="message assistant">
+          <img class="avatar" src="/static/logo.png" alt="ACTA GHOST" />
+          <div class="bubble">
+            <p>Здравствуйте! Я ACTA GHOST — ваша когнитивная платформа. Опишите задачу,
+            и я определю намерение, обновлю контекст, спланирую и выполню работу
+            через специализированных агентов.</p>
+          </div>
+        </div>
+      </div>
+
+      <form id="composer" class="composer">
+        <input id="input" type="text" autocomplete="off"
+               placeholder="Например: Исследуй лучшие практики кэширования в Postgres и набросай план внедрения" />
+        <button id="send" type="submit">Отправить</button>
+      </form>
+    </main>
+
+    <aside class="inspector">
+      <div class="tabs">
+        <button class="tab active" data-tab="trace">Трасса</button>
+        <button class="tab" data-tab="plan">План</button>
+        <button class="tab" data-tab="intent">Намерение</button>
+      </div>
+      <div id="tab-trace" class="tab-content active"></div>
+      <div id="tab-plan" class="tab-content"></div>
+      <div id="tab-intent" class="tab-content"></div>
+    </aside>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

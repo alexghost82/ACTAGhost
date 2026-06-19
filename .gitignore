@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ACTA local state (encrypted user data lives here — never commit)
+.acta/
+*.db
+*.sqlite3
+*.key
+
+# Secrets
+.env
+
+# OS
+.DS_Store

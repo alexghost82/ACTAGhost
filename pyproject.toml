@@ -1,0 +1,53 @@
+[project]
+name = "acta"
+version = "0.1.0"
+description = "ACTA GHOST — Autonomous Cognitive Task Assistant: a personal cognitive operating environment with an agentic, multi-model, memory-driven core."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "ACTA" }]
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "cryptography>=42.0",
+    "networkx>=3.2",
+    "httpx>=0.27",
+    "python-multipart>=0.0.9",
+    "psutil>=5.9",
+]
+
+[project.optional-dependencies]
+# Cloud / local model providers (only needed if you enable them in config)
+openai = ["openai>=1.30"]
+anthropic = ["anthropic>=0.25"]
+gemini = ["google-generativeai>=0.5"]
+# Production-grade backing stores (the MVP runs without them)
+postgres = ["psycopg[binary]>=3.1", "pgvector>=0.2"]
+neo4j = ["neo4j>=5.18"]
+redis = ["redis>=5.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+acta = "acta.api.app:run"
+acta-telegram = "acta.channels.telegram:run_cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["acta"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
