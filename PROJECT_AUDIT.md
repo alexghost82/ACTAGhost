@@ -1,87 +1,84 @@
-# PROJECT_AUDIT.md — ACTA
+# PROJECT_AUDIT.md — ACTA GHOST
 
-> Полный аудит репозитория. Каждое заключение подтверждено ссылками на код (`путь:строка`).
-> Дата аудита: 2026-06-19. Версия: `0.1.0` (`pyproject.toml:3`).
+> Повторный аудит репозитория после выполнения плана production-готовности (саб-агенты A1–A9).
+> Каждое заключение подтверждено ссылками на код (`путь:строка`). Дата: 2026-06-19 (re-audit).
+> Версия: `0.1.0` (`pyproject.toml:3`). Базовая линия прошлого аудита: **58/100**.
 
 ## 1. Что это за проект
 
-**ACTA — Autonomous Cognitive Task Assistant** (`pyproject.toml:4`): персональная когнитивная платформа
-с агентным, мультимодельным, управляемым памятью ядром. Пользователь отправляет запрос (через веб-UI,
-Telegram или WhatsApp), а конвейер из ~15 агентов распознаёт намерение, строит план, маршрутизирует
-подзадачи на специализированных воркеров (включая **полный контроль над ОС**) и формирует ответ на
-русском / иврите / английском.
+**ACTA GHOST — Autonomous Cognitive Task Assistant** (`pyproject.toml:4`): персональная когнитивная
+платформа на Python/FastAPI. Запрос пользователя (веб-UI / Telegram / WhatsApp) проходит конвейер из
+~15 агентов: намерение → контекст → рассуждение → план → стратегия → исполнение воркерами → ответ.
+Память шифрована (SQLite+Fernet), граф знаний (networkx), мультимодельный роутинг с офлайн-фолбэком,
+трёхъязычность ru/he/en, опциональный полный контроль над ОС (по умолчанию выключен).
 
-- **Проблема**: единая точка входа для «мышления + действия» на машине пользователя.
-- **Пользователи**: владелец машины (single-user по дизайну, `user_id="default"` — `schemas.py:66`).
-- **Ценность**: локальный, офлайн-способный ассистент с памятью, графом знаний и реальными действиями в ОС.
-
-## 2. Технологический стек
+## 2. Технологический стек (обновлён)
 
 | Слой | Технологии | Где |
 |---|---|---|
-| Язык | Python ≥3.11 | `pyproject.toml:6` |
-| Web/API | FastAPI, Uvicorn | `acta/api/app.py` |
-| Модели данных | Pydantic v2, pydantic-settings | `acta/schemas.py`, `acta/config.py` |
-| Шифрование | cryptography (Fernet, PBKDF2) | `acta/security/crypto.py` |
-| Граф знаний | networkx (MultiDiGraph) | `acta/knowledge_graph/graph.py` |
-| Хранилище | SQLite (шифрованное) | `acta/memory/store.py` |
-| HTTP-клиент | httpx | провайдеры, каналы |
-| Система | subprocess, psutil, signal, shutil | `acta/integration/system.py` |
-| LLM-провайдеры | OpenAI, Anthropic, Gemini, Ollama, Mock | `acta/providers/` |
-| Каналы | Telegram Bot API, WhatsApp Cloud API | `acta/channels/` |
-| Frontend | ванильный JS/HTML/CSS | `acta/web/` |
-| Опциональные | Postgres+pgvector, Neo4j, Redis (объявлены, не используются) | `pyproject.toml:27-29` |
+| Язык / Web | Python ≥3.11, FastAPI, Uvicorn | `acta/api/app.py` |
+| Идентичность | токены→принципалы, роли ADMIN/USER | `acta/identity/` |
+| Наблюдаемость | Prometheus, OpenTelemetry, Sentry (опц.) | `acta/observability/runtime.py` |
+| Хранилище | SQLite (WAL, per-thread conn, FTS5) | `acta/memory/store.py` |
+| Миграции | Alembic | `alembic/`, `alembic.ini` |
+| Шифрование | Fernet/PBKDF2, внешний путь ключа | `acta/security/crypto.py` |
+| Граф знаний | networkx + инкрементальная персистентность | `acta/knowledge_graph/graph.py` |
+| Провайдеры | OpenAI/Anthropic/Gemini/Ollama/Mock + ретраи+circuit breaker | `acta/providers/` |
+| Мультимодальность | Whisper STT, Piper TTS, vision (опц., за флагами) | `acta/multimodal/`, `config.py:78-93` |
+| Каналы | Telegram/WhatsApp + allowlist + HMAC + дедуп | `acta/channels/` |
+| DevOps | Docker, docker-compose, CI (GitHub Actions), pre-commit | корень, `.github/workflows/ci.yml` |
 
-## 3. Карта архитектуры
+## 3. Что изменилось с прошлого аудита (проверено в коде)
 
-Точка входа `acta` → `acta.api.app:run` (`pyproject.toml:37`) поднимает Uvicorn на `127.0.0.1:8765`
-(`api/app.py:185`). `create_app()` строит `AgentServices` (`agents/base.py:35`) и `Orchestrator`.
-
-Конвейер `Orchestrator.run()` (`orchestrator/orchestrator.py:63-119`) — 15 шагов на едином объекте
-`PipelineState` (`orchestrator/state.py`):
-
-```mermaid
-flowchart TD
-    A[UserRequest] --> UI1[UI intake]
-    UI1 --> MM[Multimodal.normalize + детект языка]
-    MM --> INT[Intent]
-    INT --> MR[Memory.retrieve]
-    MR --> KG[KnowledgeGraph search+grow]
-    KG --> CTX[Context]
-    CTX --> RSN[Reasoning]
-    RSN --> PLN[Planning]
-    PLN --> DEC[Decision: стратегия+роутинг]
-    DEC --> EXE[Execute plan: воркеры]
-    EXE --> ITG[Integration]
-    ITG --> SEC[Security review]
-    SEC --> UI2[UI.compose answer]
-    UI2 --> MP[Memory.persist]
-    MP --> RND[Multimodal.render]
-    RND --> R[ActaResponse]
-```
-
-Воркеры (`agents/specialized.py:220`): `research`, `coding`, `automation`, `system`. Исполнение —
-последовательное или параллельное (`ThreadPoolExecutor`, `orchestrator.py:191`) с учётом зависимостей.
-
-Маршрутизация моделей (`providers/router.py`): профиль задачи → провайдер, с прозрачным фолбэком на
-офлайн-`mock` (`router.py:102`), поэтому система не падает без ключей.
-
-## 4. Итоговые оценки
-
-| Критерий | Оценка (0-100) | Комментарий |
+| Прошлый риск | Статус | Доказательство |
 |---|---|---|
-| Архитектура | 82 | Чистая, модульная, тестируемая; конвейер прозрачен |
-| Качество кода | 80 | Ruff чист, типизация, единый стиль; немного дублирования |
-| Безопасность | 22 | **RCE по дизайну без аутентификации** — критично |
-| Масштабируемость | 35 | Поиск памяти O(N), перезапись графа на каждый запрос, один SQLite-коннект |
-| Поддерживаемость | 78 | Понятные модули, документация, тесты |
-| **Итог** | **58** | Сильный прототип/MVP, не готов к продакшену из-за безопасности и масштаба |
+| SEC-1 RCE без auth | ✅ закрыт | `_require_api_auth` на всех маршрутах (`api/app.py:125,301,343,489,508`) |
+| Опасный дефолт system control | ✅ закрыт | `allow_system_control=False` (`config.py:102`) |
+| SEC-2 каналы без allowlist | ✅ закрыт | `_is_sender_allowed` (`telegram.py:129`, `whatsapp.py:133`) |
+| SEC-3 подпись WhatsApp | ✅ закрыт | `verify_signature` HMAC (`whatsapp.py:120`), вызов в `api/app.py:510-514` |
+| SEC-4 утечка данных | ✅ закрыт | изоляция по принципалу (`_resolve_effective_user_id`, `api/app.py:136`) |
+| SEC-5 command/env injection | ✅ закрыт | `shlex`+argv без shell, env-allowlist (`system.py:271-295`) |
+| SEC-6 неогранич. fs | ✅ смягчён | sandbox для delete/move (`system.py:211-218,297-308`) |
+| SEC-7 ключ рядом с БД | ◐ частично | `fernet_key_path` (`crypto.py:59-62`), но KMS/keychain нет |
+| SEC-8 декоративные права | ✅ закрыт | ролевой гейт system.control (`permissions.py:64-66`) |
+| SEC-9 нет rate limit/CORS | ✅ закрыт | middleware (`api/app.py:52-101,225-233`) |
+| PERF-1 поиск памяти O(N) | ✅ закрыт | FTS5+bm25+TF-IDF реранк (`store.py:236-258`) |
+| PERF-2 перезапись графа | ✅ закрыт | журнал+компакция (`config.py:130-131`, `graph.py`) |
+| PERF-4 один коннект+lock | ✅ закрыт | WAL + per-thread conn (`store.py:73-88`) |
+| PERF-5 течь буфера аудита | ✅ закрыт | `deque(maxlen)` + ротация (`audit.py:21,38-46`) |
+| TD-10 `on_event` устарел | ✅ закрыт | `lifespan` (`api/app.py:191-217`) |
 
-## 5. Состояние сборки
+## 4. Остаточные находки (проверено)
 
-- Тесты: **42 passed** (`uv run pytest -q`), детерминированно на mock-провайдере.
-- Линтер: **ruff — All checks passed**.
-- Запуск: офлайн «из коробки», без ключей и внешних БД (`config.py` — все значения с дефолтами).
+- **RES-1 (Low)**: `principal_role` по умолчанию «admin» при отсутствии (`specialized.py:118`,
+  `permissions.py:65`). API и каналы всегда задают роль (`api/app.py:155`, `channels/base.py:69`),
+  поэтому эксплуатируется лишь внутренними/тестовыми вызовами. Безопаснее дефолт «user».
+- **RES-2 (Medium, масштаб)**: rate limiter, circuit breaker, дедуп вебхуков и история — in-memory/SQLite,
+  т.е. per-process (`api/app.py:72-101`, `channels/base.py:16`). Для нескольких реплик нужен общий стор.
+- **RES-3 (Medium)**: Postgres+pgvector и Neo4j заявлены в extras/конфиге (`pyproject.toml:31-32`,
+  `config.py:122-128`), но бэкенды не реализованы — память SQLite, граф in-process (TD-12).
+- **RES-4 (Low)**: загрузка медиа из Telegram/WhatsApp (media_id → файл) для STT/vision не реализована.
+- **RES-5 (Low)**: `/metrics` намеренно без аутентификации (`api/app.py:266-270`) — закрыть на уровне сети.
 
-Подробности — в `SECURITY_REPORT.md`, `PERFORMANCE_REPORT.md`, `ARCHITECTURE_REPORT.md`,
-`FEATURES_MAP.md`, `TECH_DEBT.md`, `ROADMAP.md`.
+## 5. Состояние сборки (проверено)
+
+- Тесты: **98 passed, 1 skipped** (`uv run pytest -q`).
+- Покрытие: **81.40%**, гейт `--cov-fail-under=80` (`pyproject.toml:64`).
+- Линтер: **ruff — All checks passed**; mypy сконфигурирован (`pyproject.toml:70-78`).
+- Прод-гард: при `ACTA_ENV=prod` без токена старт падает (`config.py:162-165`).
+
+## 6. Итоговые оценки
+
+| Критерий | Прошлый аудит | Текущий | Комментарий |
+|---|---|---|---|
+| Архитектура | 82 | 86 | идентичность, наблюдаемость, чистый слой API v1 |
+| Качество кода | 80 | 88 | mypy, coverage-гейт, расширенные тесты |
+| Безопасность | 22 | **84** | auth+роли, харднинг exec, HMAC, allowlist, rate limit |
+| Масштабируемость | 35 | 72 | FTS5, WAL, инкрем. граф; векторные/мульти-инстанс отложены |
+| Надёжность | — | 82 | lifespan, ретраи+circuit breaker, идемпотентность |
+| Наблюдаемость | — | 80 | request_id-логи, метрики, надёжный аудит |
+| Поддерживаемость | 78 | 85 | CI, Docker, pre-commit, миграции |
+| **Итог** | **58** | **≈83** | Готов к контролируемому продакшену; остаются RES-1..5 |
+
+Детали — в `SECURITY_REPORT.md`, `PERFORMANCE_REPORT.md`, `ARCHITECTURE_REPORT.md`, `FEATURES_MAP.md`,
+`TECH_DEBT.md`, `ROADMAP.md`, и сводный `PRODUCTION_READINESS.md`.
