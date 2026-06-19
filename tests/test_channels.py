@@ -67,3 +67,70 @@ def test_whatsapp_allowlist_blocks_unknown_sender(orchestrator, services):
     services.settings.whatsapp_allowed_numbers = ["972511111111"]
     ch = WhatsAppChannel(ChannelHub(orchestrator), services.settings)
     assert ch._is_sender_allowed("972500000000") is False
+
+
+def test_telegram_allowlist_drops_non_allowlisted_sender(orchestrator, services, monkeypatch):
+    services.settings.telegram_allowed_chat_ids = ["111"]
+    hub = ChannelHub(orchestrator)
+    ch = TelegramChannel(hub, services.settings)
+    calls = {"handled": 0, "sent": 0}
+
+    def _fake_handle(_msg):
+        calls["handled"] += 1
+        return "ignored"
+
+    def _fake_send(_chat_id, _text):
+        calls["sent"] += 1
+        return {"ok": True}
+
+    monkeypatch.setattr(hub, "handle", _fake_handle)
+    monkeypatch.setattr(ch, "send_message", _fake_send)
+    ch.handle_update(
+        {
+            "update_id": 1,
+            "message": {"chat": {"id": 222}, "text": "hello", "from": {"username": "u"}},
+        }
+    )
+    assert calls == {"handled": 0, "sent": 0}
+
+
+def test_whatsapp_allowlist_drops_non_allowlisted_sender(orchestrator, services, monkeypatch):
+    services.settings.whatsapp_allowed_numbers = ["972511111111"]
+    hub = ChannelHub(orchestrator)
+    ch = WhatsAppChannel(hub, services.settings)
+    calls = {"handled": 0, "sent": 0}
+
+    def _fake_handle(_msg):
+        calls["handled"] += 1
+        return "ignored"
+
+    def _fake_send(_to, _text):
+        calls["sent"] += 1
+        return {"ok": True}
+
+    monkeypatch.setattr(hub, "handle", _fake_handle)
+    monkeypatch.setattr(ch, "send_message", _fake_send)
+    processed = ch.handle_webhook(
+        {
+            "entry": [
+                {
+                    "changes": [
+                        {
+                            "value": {
+                                "messages": [
+                                    {
+                                        "id": "msg-1",
+                                        "type": "text",
+                                        "from": "972500000000",
+                                        "text": {"body": "hello"},
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+    )
+    assert processed == 0
+    assert calls == {"handled": 0, "sent": 0}

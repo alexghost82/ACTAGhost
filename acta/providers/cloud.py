@@ -19,7 +19,7 @@ class OpenAIProvider(LLMProvider):
 
     def _ensure_client(self):
         if self._client is None:
-            from openai import OpenAI  # type: ignore
+            from openai import OpenAI
 
             self._client = OpenAI(api_key=self._api_key)
         return self._client
@@ -52,7 +52,7 @@ class AnthropicProvider(LLMProvider):
 
     def _ensure_client(self):
         if self._client is None:
-            import anthropic  # type: ignore
+            import anthropic
 
             self._client = anthropic.Anthropic(api_key=self._api_key)
         return self._client
@@ -89,7 +89,7 @@ class GeminiProvider(LLMProvider):
 
     def _ensure(self):
         if not self._configured:
-            import google.generativeai as genai  # type: ignore
+            import google.generativeai as genai
 
             genai.configure(api_key=self._api_key)
             self._genai = genai

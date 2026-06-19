@@ -106,3 +106,18 @@ def test_system_control_denied_for_user_role_even_when_enabled(services):
     agent = SystemAgent(services)
     with pytest.raises(PermissionDenied):
         agent.execute_task(state, PlanTask(agent="system", description="system info"))
+
+
+def test_system_destructive_fs_ops_require_confirm(services, tmp_path):
+    _enable_system_control(services)
+    conn = SystemConnector(services.settings)
+    source = tmp_path / "source.txt"
+    source.write_text("hello", encoding="utf-8")
+    delete_without_confirm = conn.execute("fs", {"op": "delete", "path": str(source)})
+    assert delete_without_confirm["ok"] is False
+    assert delete_without_confirm["code"] == "confirmation_required"
+
+    destination = tmp_path / "destination.txt"
+    move_without_confirm = conn.execute("fs", {"op": "move", "path": str(source), "dest": str(destination)})
+    assert move_without_confirm["ok"] is False
+    assert move_without_confirm["code"] == "confirmation_required"

@@ -28,7 +28,7 @@ def detect_language(text: str, default: str = "ru") -> str:
         "ru": len(_CYRILLIC.findall(text)),
         "en": len(_LATIN.findall(text)),
     }
-    best = max(counts, key=counts.get)
+    best = max(counts, key=lambda lang: counts[lang])
     if counts[best] == 0:
         return default if default in SUPPORTED else "ru"
     return best
