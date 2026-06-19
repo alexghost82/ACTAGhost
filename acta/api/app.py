@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import threading
 import time
+from contextlib import asynccontextmanager
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
@@ -91,30 +91,10 @@ def create_app() -> FastAPI:
     services = AgentServices.build(settings)
     orchestrator = Orchestrator(services)
 
-    app = FastAPI(
-        title="ACTA GHOST — Autonomous Cognitive Task Assistant",
-        version="0.1.0",
-        description="Agentic, multi-model, memory-driven personal cognitive platform.",
-    )
-    app.state.services = services
-    app.state.orchestrator = orchestrator
-
     # Messaging channels (Telegram / WhatsApp).
     hub = ChannelHub(orchestrator)
     telegram = TelegramChannel(hub, settings)
     whatsapp = WhatsAppChannel(hub, settings)
-    app.state.hub = hub
-    app.state.telegram = telegram
-    app.state.whatsapp = whatsapp
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.api_cors_origins,
-        allow_credentials=False,
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Hub-Signature-256"],
-    )
-    app.add_middleware(BodySizeLimitMiddleware, max_body_size=settings.api_max_body_size_bytes)
-    app.add_middleware(InMemoryRateLimitMiddleware, per_minute=settings.api_rate_limit_per_minute)
 
     def _require_api_auth(request: Request) -> None:
         token = settings.api_auth_token
@@ -127,17 +107,47 @@ def create_app() -> FastAPI:
             return
         raise HTTPException(status_code=http_status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
 
-    @app.on_event("startup")
-    def _start_channels() -> None:
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
         if not settings.api_auth_token:
             log.warning("SEC-1/SEC-4: API authentication token is not configured; API remains unauthenticated")
         if not settings.whatsapp_app_secret:
             log.warning("SEC-3: WhatsApp app secret is not configured; webhook signature checks are disabled")
         # In long-poll mode (no webhook URL), run the Telegram poller in a thread.
         if telegram.enabled and not settings.telegram_webhook_url:
-            t = threading.Thread(target=telegram.poll_forever, daemon=True, name="tg-poller")
-            t.start()
+            telegram.start_polling()
             log.info("Telegram poller thread started")
+        try:
+            yield
+        finally:
+            telegram.stop()
+            stop_hub = getattr(hub, "stop", None)
+            if callable(stop_hub):
+                stop_hub()
+            stop_orchestrator = getattr(orchestrator, "shutdown", None)
+            if callable(stop_orchestrator):
+                stop_orchestrator()
+
+    app = FastAPI(
+        title="ACTA GHOST — Autonomous Cognitive Task Assistant",
+        version="0.1.0",
+        description="Agentic, multi-model, memory-driven personal cognitive platform.",
+        lifespan=lifespan,
+    )
+    app.state.services = services
+    app.state.orchestrator = orchestrator
+    app.state.hub = hub
+    app.state.telegram = telegram
+    app.state.whatsapp = whatsapp
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.api_cors_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Hub-Signature-256"],
+    )
+    app.add_middleware(BodySizeLimitMiddleware, max_body_size=settings.api_max_body_size_bytes)
+    app.add_middleware(InMemoryRateLimitMiddleware, per_minute=settings.api_rate_limit_per_minute)
 
     # -- API routes -------------------------------------------------------- #
     @app.get("/api/health")

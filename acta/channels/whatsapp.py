@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 
-from acta.channels.base import ChannelHub, IncomingMessage
+from acta.channels.base import ChannelHub, IncomingMessage, RecentEventDeduper
 from acta.config import Settings, get_settings
 from acta.logging_config import get_logger
 
@@ -29,6 +29,7 @@ class WhatsAppChannel:
         self.phone_id = self.settings.whatsapp_phone_id
         self.verify_token = self.settings.whatsapp_verify_token
         self.app_secret = self.settings.whatsapp_app_secret
+        self._dedupe = RecentEventDeduper(self.settings.inbound_dedupe_window_size)
         self._allowed_numbers = {str(x).strip() for x in self.settings.whatsapp_allowed_numbers if str(x).strip()}
         if not self._allowed_numbers:
             log.warning("WhatsApp sender allowlist is empty; all numbers are accepted")
@@ -54,22 +55,36 @@ class WhatsAppChannel:
                         continue
                     sender = message.get("from")
                     text = message.get("text", {}).get("body", "")
+                    message_id = message.get("id")
                     if sender and text:
-                        out.append(IncomingMessage(channel="whatsapp", sender_id=sender, text=text))
+                        out.append(
+                            IncomingMessage(
+                                channel="whatsapp",
+                                sender_id=sender,
+                                text=text,
+                                metadata={"message_id": message_id},
+                            )
+                        )
         return out
 
     def handle_webhook(self, payload: dict[str, Any]) -> int:
         messages = self.parse_webhook(payload)
+        processed = 0
         for msg in messages:
+            message_id = msg.metadata.get("message_id")
+            if message_id and not self._dedupe.remember(str(message_id)):
+                log.debug("Skipping duplicate whatsapp message id=%s", message_id)
+                continue
             if not self._is_sender_allowed(msg.sender_id):
                 log.warning("Dropping whatsapp message from non-allowlisted sender: %s", msg.sender_id)
                 continue
             try:
                 answer = self.hub.handle(msg)
                 self.send_message(msg.sender_id, answer)
+                processed += 1
             except Exception:
                 log.exception("failed handling whatsapp message")
-        return len(messages)
+        return processed
 
     def verify_signature(self, raw_body: bytes, signature_header: str | None) -> bool:
         if not self.app_secret:
