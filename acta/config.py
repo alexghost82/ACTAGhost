@@ -99,6 +99,12 @@ class Settings(BaseSettings):
     neo4j_user: str | None = None
     neo4j_password: str | None = None
     redis_url: str | None = None
+    # Memory search backend: "auto" prefers SQLite FTS5, "legacy" keeps Python scan.
+    memory_search_backend: str = Field(default="auto")
+    # Journal compaction thresholds for KnowledgeGraph persistence.
+    kg_compact_every_ops: int = Field(default=200)
+    kg_compact_journal_bytes: int = Field(default=524_288)
+    # TODO(TD-12): Postgres/pgvector backend remains roadmap P2.
 
     def ensure_data_dir(self) -> Path:
         self.data_dir.mkdir(parents=True, exist_ok=True)
