@@ -34,6 +34,18 @@ def test_api_health_is_public_without_token(monkeypatch):
     assert resp.status_code == 200
 
 
+def test_api_ready_returns_healthy_when_initialized(monkeypatch):
+    client = _client_with_env(monkeypatch, ACTA_DEFAULT_PROVIDER="mock")
+    resp = client.get("/api/ready")
+    body = resp.json()
+    assert resp.status_code == 200
+    assert body["status"] == "ready"
+    assert body["checks"]["services"] is True
+    assert body["checks"]["orchestrator"] is True
+    assert body["checks"]["router"] is True
+    assert body["checks"]["memory"] is True
+
+
 def test_api_protected_endpoints_require_token(monkeypatch):
     client = _client_with_env(
         monkeypatch,

@@ -159,6 +159,30 @@ def create_app() -> FastAPI:
     def health() -> dict[str, Any]:
         return {"status": "ok", "app": settings.app_name, "version": app.version}
 
+    @app.get("/api/ready")
+    def ready() -> JSONResponse:
+        checks: dict[str, bool] = {}
+        try:
+            checks["services"] = app.state.services is services
+            checks["orchestrator"] = app.state.orchestrator is orchestrator
+            checks["router"] = bool(services.router.available_providers())
+            services.memory.stats()
+            checks["memory"] = True
+        except Exception:  # pragma: no cover - defensive readiness guard
+            checks["memory"] = False
+        healthy = all(checks.values()) if checks else False
+        status_code = 200 if healthy else 503
+        status_text = "ready" if healthy else "not_ready"
+        return JSONResponse(
+            {
+                "status": status_text,
+                "app": settings.app_name,
+                "version": app.version,
+                "checks": checks,
+            },
+            status_code=status_code,
+        )
+
     @app.get("/api/status")
     def status(_: User = Depends(_require_api_auth)) -> dict[str, Any]:
         return {
